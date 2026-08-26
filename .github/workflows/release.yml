@@ -72,7 +72,7 @@ jobs:
 
           APP_NAME="$(basename "${APP_PATH}" .app)"
           VERSION="${TAG_NAME#v}"
-          RELEASE_BASENAME="ClaudeSessionSwitch"
+          RELEASE_BASENAME="AgentSessionSwitch"
           if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
             ARCH_SUFFIX="arm64"
           else

@@ -1,7 +1,7 @@
-# Claude Session Switch
+# Agent Session Switch
 
-> A lightweight macOS desktop app for Claude Code / Claude CLI session switching.
-> Built natively with **Rust + [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) + [alacritty_terminal](https://github.com/alacritty/alacritty/tree/master/alacritty_terminal)**, with project grouping, session resume, and an embedded terminal.
+> A lightweight macOS desktop app for AI coding-agent session switching: **Claude Code, Codex CLI, and oh-my-pi (omp)**.
+> Built natively with **Rust + [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) + [alacritty_terminal](https://github.com/alacritty/alacritty/tree/master/alacritty_terminal)**, with project grouping, cross-agent session resume, and an embedded terminal.
 
 English (current) | [中文](./README.zh.md)
 
@@ -9,7 +9,7 @@ English (current) | [中文](./README.zh.md)
 
 ## Overview
 
-`Claude Session Switch` is not trying to replace your CLI workflow.
+`Agent Session Switch` is not trying to replace your CLI workflow.
 It focuses on making session management visual, recoverable, and automation-friendly:
 
 - Organize projects and sessions with a clear UI hierarchy
@@ -35,18 +35,21 @@ In short: **keep native CLI flow, remove session-management friction.**
 
 ## Feature highlights
 
-### 1) Project and session management
+### 1) Project and session management (multi-agent)
 
-- Sidebar with the project tree scanned from `~/.claude/projects` (plus manually added projects)
-- Expand a project to list its Claude sessions (summary labels, modification time)
-- Session rename (aliases plus `sessions-index.json`), stop, and delete actions
-- Per-project quick actions: new Claude session, open in external terminal / editor, remove
+- Sessions discovered from three agents, grouped by project directory:
+  - **Claude Code** — `~/.claude/projects` (+ `sessions-index.json`)
+  - **Codex CLI** — `$CODEX_HOME/sessions` (rollout files)
+  - **oh-my-pi (omp)** — `~/.omp/agent/sessions` (+ profiles)
+- Per-session agent badge, summary label, and modification time
+- Session rename (aliases; Claude also updates `sessions-index.json`), stop, and delete
+- Per-project quick actions: new Claude / Codex / oh-my-pi session, open in external terminal / editor, remove
 
-### 2) Claude session resume
+### 2) Cross-agent session resume
 
-- Embedded terminal launch supports `claude --resume <session_id>` with graceful fallback (`|| claude`) to a fresh session in the same directory
+- Claude: `claude --resume <id>`, Codex: `codex resume <id>`, oh-my-pi: `omp -r <id>` — each with a graceful `|| <agent>` fallback to a fresh session in the same directory
 - Configurable Claude startup args (optional default `--dangerously-skip-permissions`)
-- Startup restore of the last opened session
+- Startup restore of the last opened session (any agent)
 
 ### 3) Embedded terminal
 
@@ -75,7 +78,7 @@ App menu includes:
 - `Open Config File` (open config in system default app)
 - `Reload Config` (hot reload latest config into current UI)
 - `Check for Updates…` (GitHub releases, SHA256-verified DMG download)
-- `New Terminal` (`Cmd+T`), `Quick new Claude session` (`Cmd+N`), `Toggle Sidebar` (`Cmd+B`)
+- `New Terminal` (`Cmd+T`), `Quick new Claude session` (`Cmd+N`), `New Codex Session`, `New oh my pi Session`, `Toggle Sidebar` (`Cmd+B`)
 
 ---
 
@@ -94,8 +97,11 @@ app/src/
   theme.rs                    # palettes (default/Everforest) -> GPUI colors
   i18n.rs                     # zh-CN / en-US dictionaries
   ui.rs                       # shared widgets (text field, buttons)
-  services/                   # settings/project/claude-session/storage/update/editor
-  models/                     # data models (app_settings, claude session, ...)
+  services/
+    agent_session_service.rs  # multi-agent discovery (claude/codex/omp)
+    claude_session_service.rs # claude-specific index handling
+    ...                       # settings/project/storage/update/editor
+  models/                     # agent kinds, app settings, sessions
   utils/                      # external-terminal integration
 ```
 
@@ -149,7 +155,7 @@ cargo run --manifest-path app/Cargo.toml
 
 ```bash
 cargo build --release --manifest-path app/Cargo.toml
-bash scripts/bundle-app.sh release   # assembles ClaudeSessionSwitch.app (ad-hoc signed)
+bash scripts/bundle-app.sh release   # assembles AgentSessionSwitch.app (ad-hoc signed)
 ```
 
 ---
@@ -172,7 +178,7 @@ On `v*` tags:
 - build and publish macOS binaries for:
   - `arm64`
   - `x64` (Intel)
-- assemble `ClaudeSessionSwitch.app`, ad-hoc sign, and package DMGs
+- assemble `AgentSessionSwitch.app`, ad-hoc sign, and package DMGs
 - auto-generate release notes and `SHA256SUMS`
 - release notes are generated from commits/PRs between the previous release and current tag (`generate_release_notes: true`)
 

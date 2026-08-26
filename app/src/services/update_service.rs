@@ -10,10 +10,10 @@ use std::process::Command;
 use std::time::Duration;
 
 const GITHUB_LATEST_RELEASE_API_URL: &str =
-    "https://api.github.com/repos/MannixHu/claude-session-switch/releases/latest";
+    "https://api.github.com/repos/MannixHu/agent-session-switch/releases/latest";
 const GITHUB_API_ACCEPT: &str = "application/vnd.github+json";
-const GITHUB_USER_AGENT: &str = "ClaudeSessionSwitchUpdater/1.0";
-const UPDATE_TEMP_DIR_NAME: &str = "claude-session-switch-updates";
+const GITHUB_USER_AGENT: &str = "AgentSessionSwitchUpdater/1.0";
+const UPDATE_TEMP_DIR_NAME: &str = "agent-session-switch-updates";
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
@@ -177,7 +177,7 @@ impl UpdateService {
         }
 
         let expected_asset_name = format!(
-            "ClaudeSessionSwitch_{}_{}.dmg",
+            "AgentSessionSwitch_{}_{}.dmg",
             normalized_latest, target_arch
         );
 
@@ -422,11 +422,11 @@ mod tests {
           "published_at": "2026-03-12T08:15:00Z",
           "assets": [
             {
-              "name": "ClaudeSessionSwitch_0.1.17_arm64.dmg",
+              "name": "AgentSessionSwitch_0.1.17_arm64.dmg",
               "browser_download_url": "https://example.com/arm64.dmg"
             },
             {
-              "name": "ClaudeSessionSwitch_0.1.17_x64.dmg",
+              "name": "AgentSessionSwitch_0.1.17_x64.dmg",
               "browser_download_url": "https://example.com/x64.dmg"
             },
             {
@@ -435,7 +435,7 @@ mod tests {
             }
           ]
         }"###;
-        let checksums = "abc123  ClaudeSessionSwitch_0.1.17_arm64.dmg\nfff999  ClaudeSessionSwitch_0.1.17_x64.dmg\n";
+        let checksums = "abc123  AgentSessionSwitch_0.1.17_arm64.dmg\nfff999  AgentSessionSwitch_0.1.17_x64.dmg\n";
 
         let result =
             UpdateService::resolve_release("0.1.16", "aarch64", release_json, checksums).unwrap();
@@ -443,7 +443,7 @@ mod tests {
         assert!(result.update_available);
         assert_eq!(result.current_version, "0.1.16");
         assert_eq!(result.latest_version, "0.1.17");
-        assert_eq!(result.asset_name, "ClaudeSessionSwitch_0.1.17_arm64.dmg");
+        assert_eq!(result.asset_name, "AgentSessionSwitch_0.1.17_arm64.dmg");
         assert_eq!(result.expected_sha256, "abc123");
         assert_eq!(result.release_url, "https://example.com/releases/v0.1.17");
         assert_eq!(result.published_at, "2026-03-12T08:15:00Z");
@@ -470,7 +470,7 @@ mod tests {
           "body": null,
           "assets": [
             {
-              "name": "ClaudeSessionSwitch_0.1.17_arm64.dmg",
+              "name": "AgentSessionSwitch_0.1.17_arm64.dmg",
               "browser_download_url": "https://example.com/arm64.dmg"
             },
             {
@@ -484,7 +484,7 @@ mod tests {
             "0.1.16",
             "aarch64",
             release_json,
-            "abc123  ClaudeSessionSwitch_0.1.17_arm64.dmg\n",
+            "abc123  AgentSessionSwitch_0.1.17_arm64.dmg\n",
         )
         .unwrap();
 
@@ -498,7 +498,7 @@ mod tests {
           "tag_name": "v0.1.17",
           "assets": [
             {
-              "name": "ClaudeSessionSwitch_0.1.17_x64.dmg",
+              "name": "AgentSessionSwitch_0.1.17_x64.dmg",
               "browser_download_url": "https://example.com/x64.dmg"
             },
             {
@@ -512,7 +512,7 @@ mod tests {
             "0.1.16",
             "aarch64",
             release_json,
-            "fff999  ClaudeSessionSwitch_0.1.17_x64.dmg\n",
+            "fff999  AgentSessionSwitch_0.1.17_x64.dmg\n",
         )
         .unwrap_err();
 

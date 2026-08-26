@@ -33,11 +33,13 @@ actions!(
         CheckForUpdates,
         ToggleSidebar,
         NewTerminal,
-        NewClaudeSession
+        NewClaudeSession,
+        NewCodexSession,
+        NewOhmPiSession
     ]
 );
 
-const APP_NAME: &str = "Claude Session Switch";
+const APP_NAME: &str = "Agent Session Switch";
 const MIN_WINDOW_WIDTH: f32 = 720.0;
 const MIN_WINDOW_HEIGHT: f32 = 460.0;
 
@@ -54,7 +56,7 @@ pub fn refresh_menus(cx: &mut App, settings: &AppSettings) {
             MenuItem::action(t(language, "menu_reload_config"), ReloadConfig),
             MenuItem::action(t(language, "menu_check_for_updates"), CheckForUpdates),
             MenuItem::separator(),
-            MenuItem::action("Quit Claude Session Switch", Quit),
+            MenuItem::action("Quit Agent Session Switch", Quit),
         ],
     };
     let file_menu = Menu {
@@ -63,6 +65,8 @@ pub fn refresh_menus(cx: &mut App, settings: &AppSettings) {
         items: vec![
             MenuItem::action(t(language, "menu_new_terminal_session"), NewTerminal),
             MenuItem::action(t(language, "title_quick_new_session"), NewClaudeSession),
+            MenuItem::action(t(language, "menu_new_codex_session"), NewCodexSession),
+            MenuItem::action(t(language, "menu_new_omp_session"), NewOhmPiSession),
         ],
     };
     let view_menu = Menu {
@@ -182,7 +186,11 @@ fn main() {
         cx.on_action({
             move |_: &NewClaudeSession, cx| {
                 let _ = window.update(cx, |dashboard, window, cx| {
-                    dashboard.new_claude_session_action(window, cx);
+                    dashboard.new_agent_session_action(
+                        crate::models::agent::AgentKind::Claude,
+                        window,
+                        cx,
+                    );
                 });
             }
         });

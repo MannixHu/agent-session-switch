@@ -1,4 +1,4 @@
-use crate::models::Project;
+use crate::models::project::Project;
 use crate::services::storage_service::StorageService;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -194,7 +194,7 @@ impl Default for ProjectService {
 #[cfg(test)]
 mod tests {
     use super::ProjectService;
-    use crate::models::Project;
+    use crate::models::project::Project;
 
     #[allow(clippy::too_many_arguments)]
     fn project(

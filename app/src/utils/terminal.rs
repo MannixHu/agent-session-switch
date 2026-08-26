@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::models::TerminalApp;
+use crate::models::terminal::TerminalApp;
 use uuid::Uuid;
 
 pub fn detect_available_terminals() -> Vec<TerminalApp> {

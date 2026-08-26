@@ -8,9 +8,9 @@ use gpui::prelude::*;
 use gpui::{App, AppContext, Context, Focusable, MouseButton, ScrollWheelEvent, Window, div, px};
 
 use crate::i18n::{AppLanguage, t, tf};
+use crate::models::agent::{AgentKind, AgentSession};
 use crate::models::app_settings::{AppSettings, LastOpenedSession};
-use crate::models::claude_session::ClaudeSession;
-use crate::services::claude_session_service::ClaudeSessionService;
+use crate::services::agent_session_service::AgentSessionService;
 use crate::services::project_service::ProjectService;
 use crate::services::settings_service::SettingsService;
 use crate::services::storage_service::StorageService;
@@ -25,7 +25,7 @@ const SIDEBAR_MAX_WIDTH: f32 = 520.0;
 
 struct SidebarProject {
     path: String,
-    sessions: Vec<ClaudeSession>,
+    sessions: Vec<AgentSession>,
     sessions_loaded: bool,
 }
 
@@ -60,8 +60,7 @@ struct UpdateUiState {
 #[derive(Clone)]
 enum ConfirmKind {
     DeleteSession {
-        project_path: String,
-        session_id: String,
+        session: crate::models::agent::AgentSession,
     },
     DeleteProject {
         path: String,
@@ -164,12 +163,30 @@ impl Dashboard {
 
         dashboard.refresh_projects(cx);
         if restore {
-            if let Some(LastOpenedSession {
-                project_path,
-                session_id,
-            }) = last_opened
-            {
-                dashboard.open_claude_session(&project_path, &session_id, window, cx);
+            if let Some(wanted) = last_opened {
+                let window_handle = window.window_handle();
+                let weak = cx.entity().downgrade();
+                cx.spawn(async move |this, cx| {
+                    let sessions = cx
+                        .background_executor()
+                        .spawn(async move { AgentSessionService::list_all_sessions() })
+                        .await;
+                    let Some(session) = sessions.into_iter().find(|session| {
+                        session.project_path == wanted.project_path
+                            && session.session_id == wanted.session_id
+                    }) else {
+                        return;
+                    };
+                    let _ = weak;
+                    let _ = window_handle.update(cx, |_handle, window, cx| {
+                        let _ = _handle;
+                        this.update(cx, |dashboard, cx| {
+                            dashboard.open_agent_session(&session, window, cx);
+                        })
+                        .ok();
+                    });
+                })
+                .detach();
             }
         }
         dashboard
@@ -232,83 +249,57 @@ impl Dashboard {
         cx.spawn(async move |this, cx| {
             let loaded = cx
                 .background_executor()
-                .spawn(async move { ClaudeSessionService::list_claude_projects() })
-                .await;
-            this.update(cx, |this, cx| match loaded {
-                Ok(entries) => {
-                    let order = this.settings.ui.project_tree.project_order.clone();
-                    let mut projects: Vec<SidebarProject> = entries
-                        .into_iter()
-                        .map(|(_dir_name, path)| SidebarProject {
-                            path,
-                            sessions: Vec::new(),
-                            sessions_loaded: false,
-                        })
-                        .collect();
-                    // User-added projects that do not have Claude sessions yet
-                    // still need to appear in the sidebar.
-                    for stored in this.project_service.list_projects().unwrap_or_default() {
-                        if !projects.iter().any(|project| project.path == stored.path) {
-                            projects.push(SidebarProject {
-                                path: stored.path,
-                                sessions: Vec::new(),
-                                sessions_loaded: false,
-                            });
-                        }
-                    }
-
-                    projects.sort_by_key(|project| {
-                        let index = order.iter().position(|path| path == &project.path);
-                        (index.is_none(), index.unwrap_or(usize::MAX))
-                    });
-
-                    this.projects = projects;
-                    for path in this.expanded.iter().cloned().collect::<Vec<_>>() {
-                        this.load_sessions_for(&path, cx);
-                    }
-                    cx.notify();
-                }
-                Err(error) => {
-                    log::warn!("Failed to list claude projects: {}", error);
-                    this.show_status(this.t("status_load_failed").to_string(), cx);
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn load_sessions_for(&mut self, project_path: &str, cx: &mut Context<Self>) {
-        let path = project_path.to_string();
-        let path_for_update = path.clone();
-        cx.spawn(async move |this, cx| {
-            let loaded = cx
-                .background_executor()
-                .spawn(async move { ClaudeSessionService::list_sessions_for_project(&path, None) })
+                .spawn(async move { AgentSessionService::list_all_sessions() })
                 .await;
             this.update(cx, |this, cx| {
-                if let Ok(sessions) = loaded {
-                    if let Some(project) = this
-                        .projects
-                        .iter_mut()
-                        .find(|project| project.path == path_for_update)
-                    {
-                        project.sessions = sessions;
-                        project.sessions_loaded = true;
+                let order = this.settings.ui.project_tree.project_order.clone();
+                let mut paths: Vec<String> = loaded
+                    .iter()
+                    .map(|session| session.project_path.clone())
+                    .collect();
+                // User-added projects that do not have any agent sessions yet
+                // still need to appear in the sidebar.
+                for stored in this.project_service.list_projects().unwrap_or_default() {
+                    if !paths.contains(&stored.path) {
+                        paths.push(stored.path);
                     }
-                    cx.notify();
                 }
+
+                let mut projects: Vec<SidebarProject> = paths
+                    .into_iter()
+                    .map(|path| SidebarProject {
+                        sessions: loaded
+                            .iter()
+                            .filter(|session| session.project_path == path)
+                            .cloned()
+                            .collect(),
+                        path,
+                        sessions_loaded: true,
+                    })
+                    .collect();
+                projects.sort_by_key(|project| {
+                    let index = order.iter().position(|path| path == &project.path);
+                    (index.is_none(), index.unwrap_or(usize::MAX))
+                });
+
+                this.projects = projects;
+                cx.notify();
             })
             .ok();
         })
         .detach();
     }
 
-    fn visible_sessions<'a>(&'a self, project: &'a SidebarProject) -> Vec<&'a ClaudeSession> {
+    fn load_sessions_for(&mut self, _project_path: &str, cx: &mut Context<Self>) {
+        // Session lists are always refreshed with a full multi-agent scan;
+        // kept as a hook so callers stay stable.
+        self.refresh_projects(cx);
+    }
+
+    fn visible_sessions<'a>(&'a self, project: &'a SidebarProject) -> Vec<&'a AgentSession> {
         project
             .sessions
             .iter()
-            .filter(|session| !session.is_sidechain)
             .filter(|session| {
                 !self
                     .settings
@@ -321,7 +312,7 @@ impl Dashboard {
             .collect()
     }
 
-    fn session_label(&self, session: &ClaudeSession) -> String {
+    fn session_label(&self, session: &AgentSession) -> String {
         self.settings
             .sessions
             .aliases
@@ -329,11 +320,10 @@ impl Dashboard {
             .cloned()
             .filter(|alias| !alias.trim().is_empty())
             .unwrap_or_else(|| {
-                let summary = session.summary.trim();
-                if summary.is_empty() {
-                    session.first_prompt.trim().to_string()
+                if session.summary.trim().is_empty() {
+                    short_time(&session.modified)
                 } else {
-                    summary.to_string()
+                    session.summary.trim().to_string()
                 }
             })
     }
@@ -361,32 +351,38 @@ impl Dashboard {
         })
     }
 
-    fn open_claude_session(
+    fn open_agent_session(
         &mut self,
-        project_path: &str,
-        session_id: &str,
+        session: &AgentSession,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self.tab_for_session(project_path, session_id) {
+        let project_path = session.project_path.clone();
+        let session_id = session.session_id.clone();
+        if let Some(index) = self.tab_for_session(&project_path, &session_id) {
             self.active_tab = index;
             cx.notify();
             return;
         }
 
-        // Hide unresumable sessions the same way the previous frontend did.
-        let resumable = ClaudeSessionService::list_sessions_for_project(project_path, None)
+        // Sessions discovered by scanning are resumable by construction; a
+        // stale Claude entry (file deleted between scans) is hidden the same
+        // way the previous frontend did.
+        let stale_claude_entry = session.agent == AgentKind::Claude
+            && !crate::services::claude_session_service::ClaudeSessionService::list_sessions_for_project(
+                &project_path, None,
+            )
             .map(|sessions| {
                 sessions
                     .iter()
-                    .any(|session| session.session_id == session_id && !session.is_sidechain)
+                    .any(|s| s.session_id == session_id && !s.is_sidechain)
             })
             .unwrap_or(false);
-        if !resumable {
+        if stale_claude_entry {
             self.settings
                 .sessions
                 .hidden
-                .insert(session_id.to_string(), true);
+                .insert(session_id.clone(), true);
             self.persist_settings(cx);
             self.show_status(self.t("status_session_hidden_invalid").to_string(), cx);
             return;
@@ -400,16 +396,18 @@ impl Dashboard {
                 project
                     .sessions
                     .iter()
-                    .find(|session| session.session_id == session_id)
+                    .find(|candidate| candidate.session_id == session_id)
             })
-            .map(|session| self.session_label(session))
-            .unwrap_or_else(|| session_id.to_string());
+            .map(|found| self.session_label(found))
+            .unwrap_or_else(|| session_id.clone());
+        let title = format!("[{}] {}", session.agent.badge(), label);
 
         let view = cx.new(|cx| {
             TerminalView::new(
-                PathBuf::from(project_path),
-                TerminalLaunch::ClaudeResume {
-                    session_id: session_id.to_string(),
+                PathBuf::from(&project_path),
+                TerminalLaunch::AgentResume {
+                    agent: session.agent,
+                    session_id: session_id.clone(),
                     claude_args: self.claude_args(),
                 },
                 cx,
@@ -417,16 +415,16 @@ impl Dashboard {
         });
         self.tabs.push(TerminalTab {
             key: format!("{}:{}", project_path, session_id),
-            title: label,
-            project_path: Some(project_path.to_string()),
-            session_id: Some(session_id.to_string()),
+            title,
+            project_path: Some(project_path.clone()),
+            session_id: Some(session_id.clone()),
             view,
         });
         self.active_tab = self.tabs.len() - 1;
         self.focus_active_terminal(window, cx);
         self.settings.sessions.last_opened = Some(LastOpenedSession {
-            project_path: project_path.to_string(),
-            session_id: session_id.to_string(),
+            project_path: project_path.clone(),
+            session_id: session_id.clone(),
         });
         self.persist_settings(cx);
         cx.notify();
@@ -439,21 +437,24 @@ impl Dashboard {
         }
     }
 
-    fn new_claude_session(
+    fn new_agent_session(
         &mut self,
         project_path: &str,
+        agent: AgentKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let label = PathBuf::from(project_path)
+        let project_name = PathBuf::from(project_path)
             .file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("claude")
+            .unwrap_or("agent")
             .to_string();
+        let label = format!("[{}] {}", agent.badge(), project_name);
         let view = cx.new(|cx| {
             TerminalView::new(
                 PathBuf::from(project_path),
-                TerminalLaunch::ClaudeResume {
+                TerminalLaunch::AgentResume {
+                    agent,
                     session_id: String::new(),
                     claude_args: self.claude_args(),
                 },
@@ -461,7 +462,7 @@ impl Dashboard {
             )
         });
         self.tabs.push(TerminalTab {
-            key: format!("{}:new-claude-{}", project_path, self.tabs.len()),
+            key: format!("{}:new-{}-{}", project_path, agent.key(), self.tabs.len()),
             title: label,
             project_path: Some(project_path.to_string()),
             session_id: None,
@@ -579,29 +580,25 @@ impl Dashboard {
                 self.settings.sessions.aliases.remove(&session_id);
                 self.show_status(self.t("status_session_alias_cleared").to_string(), cx);
             } else {
-                if let Some(project_path) = self
-                    .tabs
+                let session_ref = self
+                    .projects
                     .iter()
-                    .find(|tab| tab.session_id.as_deref() == Some(&session_id))
-                    .and_then(|tab| tab.project_path.clone())
-                    .or_else(|| {
-                        self.projects
-                            .iter()
-                            .find(|project| {
-                                project
-                                    .sessions
-                                    .iter()
-                                    .any(|session| session.session_id == session_id)
-                            })
-                            .map(|project| project.path.clone())
-                    })
-                {
-                    if let Err(error) = ClaudeSessionService::rename_claude_session(
-                        &project_path,
-                        &session_id,
-                        &value,
-                    ) {
-                        log::warn!("Failed to rename claude session {}: {}", session_id, error);
+                    .flat_map(|project| project.sessions.iter())
+                    .find(|session| session.session_id == session_id)
+                    .cloned();
+                if let Some(found) = session_ref {
+                    if found.agent == AgentKind::Claude {
+                        if let Err(error) =
+                            crate::services::claude_session_service::ClaudeSessionService::rename_claude_session(
+                                &found.project_path, &session_id, &value,
+                            )
+                        {
+                            log::warn!(
+                                "Failed to rename claude session {}: {}",
+                                session_id,
+                                error
+                            );
+                        }
                     }
                 }
                 self.settings
@@ -628,51 +625,36 @@ impl Dashboard {
         cx.notify();
     }
 
-    fn request_delete_session(
-        &mut self,
-        project_path: &str,
-        session_id: &str,
-        cx: &mut Context<Self>,
-    ) {
-        let label = self
-            .projects
-            .iter()
-            .find(|project| project.path == project_path)
-            .and_then(|project| {
-                project
-                    .sessions
-                    .iter()
-                    .find(|session| session.session_id == session_id)
-            })
-            .map(|session| self.session_label(session))
-            .unwrap_or_default();
+    fn request_delete_session(&mut self, session: &AgentSession, cx: &mut Context<Self>) {
+        let label = self.session_label(session);
         let message = format!("{}\n\n{}", label, self.t("confirm_delete_session"));
         self.overlay = Overlay::Confirm(ConfirmState {
             kind: ConfirmKind::DeleteSession {
-                project_path: project_path.to_string(),
-                session_id: session_id.to_string(),
+                session: session.clone(),
             },
             message,
         });
         cx.notify();
     }
 
-    fn perform_delete_session(
-        &mut self,
-        project_path: &str,
-        session_id: &str,
-        cx: &mut Context<Self>,
-    ) {
-        match ClaudeSessionService::delete_claude_session(project_path, session_id) {
+    fn perform_delete_session(&mut self, session: &AgentSession, cx: &mut Context<Self>) {
+        match AgentSessionService::delete_session(session) {
             Ok(()) => {
-                if let Some(index) = self.tab_for_session(project_path, session_id) {
+                if let Some(index) =
+                    self.tab_for_session(&session.project_path, &session.session_id)
+                {
                     self.close_tab(index, cx);
                 }
                 self.show_status(self.t("status_session_deleted").to_string(), cx);
-                self.load_sessions_for(project_path, cx);
+                self.refresh_projects(cx);
             }
             Err(error) => {
-                log::warn!("Failed to delete session {}: {}", session_id, error);
+                log::warn!(
+                    "Failed to delete {} session {}: {}",
+                    session.agent.key(),
+                    session.session_id,
+                    error
+                );
                 self.show_status(self.t("status_session_delete_failed").to_string(), cx);
             }
         }
@@ -819,14 +801,19 @@ impl Dashboard {
         self.new_plain_terminal(project.as_deref(), window, cx);
     }
 
-    pub fn new_claude_session_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn new_agent_session_action(
+        &mut self,
+        agent: AgentKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let project = self
             .projects
             .iter()
             .find(|project| self.expanded.contains(&project.path))
             .map(|project| project.path.clone());
         if let Some(project) = project {
-            self.new_claude_session(&project, window, cx);
+            self.new_agent_session(&project, agent, window, cx);
         }
     }
 
@@ -1198,7 +1185,12 @@ impl Dashboard {
                             let this = cx.entity();
                             move |_, window, cx| {
                                 this.update(cx, |this, cx| {
-                                    this.new_claude_session(&path_for_new, window, cx)
+                                    this.new_agent_session(
+                                        &path_for_new,
+                                        AgentKind::Claude,
+                                        window,
+                                        cx,
+                                    )
                                 });
                                 window.prevent_default();
                                 cx.stop_propagation();
@@ -1274,14 +1266,14 @@ impl Dashboard {
                             );
                             break;
                         }
+                        let session_ref = (*session).clone();
                         let session_id = session.session_id.clone();
                         let label = self.session_label(session);
                         let modified = session.modified.clone();
+                        let agent = session.agent;
                         let is_open = self.tab_for_session(&path, &session_id).is_some();
-                        let project_path_for_open = path.clone();
-                        let session_id_for_open = session_id.clone();
-                        let project_path_for_delete = path.clone();
-                        let session_id_for_delete = session_id.clone();
+                        let session_for_open = session_ref.clone();
+                        let session_for_delete = session_ref.clone();
                         let session_id_for_rename = session_id.clone();
                         let project_path_for_stop = path.clone();
                         let session_id_for_stop = session_id.clone();
@@ -1304,24 +1296,19 @@ impl Dashboard {
                                 let this = cx.entity();
                                 move |_, window, cx| {
                                     this.update(cx, |this, cx| {
-                                        this.open_claude_session(
-                                            &project_path_for_open,
-                                            &session_id_for_open,
-                                            window,
-                                            cx,
-                                        )
+                                        this.open_agent_session(&session_for_open, window, cx)
                                     });
                                     window.prevent_default();
                                 }
                             })
                             .child(
                                 div()
-                                    .w(px(6.0))
-                                    .h(px(6.0))
-                                    .rounded_full()
+                                    .w(px(16.0))
                                     .flex_none()
-                                    .when(is_open, |this| this.bg(theme.accent))
-                                    .when(!is_open, |this| this.bg(theme.border_soft)),
+                                    .text_size(px(9.0))
+                                    .text_color(agent_color(agent, theme))
+                                    .when(is_open, |this| this.font_weight(gpui::FontWeight::BOLD))
+                                    .child(agent.badge()),
                             )
                             .child(
                                 div()
@@ -1398,11 +1385,7 @@ impl Dashboard {
                                         let this = cx.entity();
                                         move |_, window, cx| {
                                             this.update(cx, |this, cx| {
-                                                this.request_delete_session(
-                                                    &project_path_for_delete,
-                                                    &session_id_for_delete,
-                                                    cx,
-                                                )
+                                                this.request_delete_session(&session_for_delete, cx)
                                             });
                                             window.prevent_default();
                                             cx.stop_propagation();
@@ -1445,7 +1428,7 @@ impl Dashboard {
                         div()
                             .text_size(px(12.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Claude Session Switch"),
+                            .child("Agent Session Switch"),
                     )
                     .child(
                         div()
@@ -1737,6 +1720,16 @@ impl Dashboard {
     }
 }
 
+/// Per-agent accent for sidebar badges: Claude keeps the palette accent,
+/// Codex reads orange-ish, oh-my-pi reads violet.
+fn agent_color(agent: AgentKind, theme: &Theme) -> gpui::Hsla {
+    match agent {
+        AgentKind::Claude => theme.accent,
+        AgentKind::Codex => crate::theme::rgb_to_hsla(0xd9, 0x77, 0x06, 1.0),
+        AgentKind::OhMyPi => crate::theme::rgb_to_hsla(0x8b, 0x5c, 0xf6, 1.0),
+    }
+}
+
 fn render_modal_scrim(theme: &Theme, width: f32, height: f32) -> gpui::Div {
     let mut scrim = gpui::black();
     scrim.a = 0.35;
@@ -1841,12 +1834,8 @@ fn render_confirm_overlay(
                             this.update(cx, |this, cx| {
                                 this.overlay = Overlay::None;
                                 match kind.clone() {
-                                    ConfirmKind::DeleteSession {
-                                        project_path,
-                                        session_id,
-                                        ..
-                                    } => {
-                                        this.perform_delete_session(&project_path, &session_id, cx)
+                                    ConfirmKind::DeleteSession { session } => {
+                                        this.perform_delete_session(&session, cx)
                                     }
                                     ConfirmKind::DeleteProject { path } => {
                                         this.perform_remove_project(&path, cx)
@@ -1958,21 +1947,35 @@ fn render_project_menu_overlay(
     let path_for_remove = path.to_string();
 
     let mut rows = div().flex().flex_col().gap(px(4.0));
-    rows = rows.child(menu_row(
-        theme,
-        "project-menu-new-claude",
-        dashboard.t("title_quick_new_session"),
-        Box::new({
-            let this = cx.entity();
-            let path = path.to_string();
-            move |window, cx| {
-                this.update(cx, |this, cx| {
-                    this.overlay = Overlay::None;
-                    this.new_claude_session(&path, window, cx);
-                });
-            }
-        }),
-    ));
+    for (agent_index, (agent, label_key)) in [
+        (AgentKind::Claude, "title_quick_new_session"),
+        (AgentKind::Codex, "menu_new_codex_session"),
+        (AgentKind::OhMyPi, "menu_new_omp_session"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let picked_agent = agent;
+        rows = rows.child(menu_row(
+            theme,
+            match agent_index {
+                0 => "project-menu-new-claude",
+                1 => "project-menu-new-codex",
+                _ => "project-menu-new-omp",
+            },
+            dashboard.t(label_key),
+            Box::new({
+                let this = cx.entity();
+                let path = path.to_string();
+                move |window, cx| {
+                    this.update(cx, |this, cx| {
+                        this.overlay = Overlay::None;
+                        this.new_agent_session(&path, picked_agent, window, cx);
+                    });
+                }
+            }),
+        ));
+    }
     rows = rows.child(menu_row(
         theme,
         "project-menu-open-terminal",

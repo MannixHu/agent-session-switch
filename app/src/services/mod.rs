@@ -1,3 +1,4 @@
+pub mod agent_session_service;
 pub mod claude_session_service;
 pub mod editor;
 pub mod project_service;

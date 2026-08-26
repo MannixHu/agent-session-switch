@@ -1,6 +1,6 @@
-# Claude Session Switch
+# Agent Session Switch
 
-> Claude Code / Claude CLI 的 macOS 轻量桌面会话切换器（Session Switcher）。
+> macOS 轻量桌面 AI 编码代理会话切换器：支持 **Claude Code、Codex CLI、oh my pi (omp)**。
 > 基于 **Rust + [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) + [alacritty_terminal](https://github.com/alacritty/alacritty/tree/master/alacritty_terminal)** 原生构建，支持项目分组、会话恢复与内嵌终端。
 
 [English](./README.md) | 中文（当前）
@@ -9,10 +9,10 @@
 
 ## 项目简介
 
-`Claude Session Switch` 关注的核心不是替代命令行，而是把「会话管理」这件事做得更直观、更可恢复：
+`Agent Session Switch` 关注的核心不是替代命令行，而是把「会话管理」这件事做得更直观、更可恢复：
 
 - 用 GUI 组织项目和会话层级
-- 用内嵌终端执行 `claude --resume <session_id>` 的真实任务
+- 用内嵌终端跨 agent 恢复会话（`claude --resume` / `codex resume` / `omp -r`）
 - 用配置文件驱动应用行为，便于人工和 AI 同时管理
 
 ---
@@ -33,18 +33,21 @@
 
 ## 功能亮点
 
-### 1) 项目与会话管理
+### 1) 项目与会话管理（多 agent）
 
-- 侧边栏展示从 `~/.claude/projects` 扫描的项目树（外加手动添加的项目）
-- 展开项目列出其 Claude 会话（摘要标签、修改时间）
-- 会话重命名（别名 + 写回 `sessions-index.json`）、停止、删除
-- 项目快捷操作：快速新建 Claude 会话、外部终端/编辑器打开、移除
+- 从三种 agent 发现会话，按项目目录统一分组：
+  - **Claude Code** — `~/.claude/projects`（含 `sessions-index.json`）
+  - **Codex CLI** — `$CODEX_HOME/sessions`（rollout 文件）
+  - **oh my pi (omp)** — `~/.omp/agent/sessions`（含 profiles）
+- 会话行带 agent 徽标、摘要标签与修改时间
+- 会话重命名（别名；Claude 额外写回 `sessions-index.json`）、停止、删除
+- 项目快捷操作：新建 Claude / Codex / oh my pi 会话、外部终端/编辑器打开、移除
 
-### 2) Claude 会话恢复
+### 2) 跨 agent 会话恢复
 
-- 内嵌终端启动 `claude --resume <session_id>`，失败时优雅回退（`|| claude`）到同目录新会话
+- Claude：`claude --resume <id>`；Codex：`codex resume <id>`；oh my pi：`omp -r <id>`，均带 `|| <agent>` 优雅回退到同目录新会话
 - 可配置 Claude 启动参数（默认可选 `--dangerously-skip-permissions`）
-- 启动时自动恢复上次打开的会话
+- 启动时自动恢复上次打开的会话（任意 agent）
 
 ### 3) 内嵌终端
 
@@ -73,7 +76,7 @@
 - `打开配置文件`（系统默认应用打开）
 - `重新加载配置`（热加载到当前界面）
 - `检查更新…`（GitHub Releases，SHA256 校验下载）
-- `新建终端`（`Cmd+T`）、`快速新建 Claude 会话`（`Cmd+N`）、`收起/展开侧边栏`（`Cmd+B`）
+- `新建终端`（`Cmd+T`）、`快速新建 Claude 会话`（`Cmd+N`）、`新建 Codex 会话`、`新建 oh my pi 会话`、`收起/展开侧边栏`（`Cmd+B`）
 
 ---
 
@@ -92,7 +95,10 @@ app/src/
   theme.rs                    # 色板（默认/Everforest）→ GPUI 颜色
   i18n.rs                     # 中英文词典
   ui.rs                       # 共享控件（文本输入框、按钮）
-  services/                   # 设置/项目/Claude会话/存储/更新/编辑器 服务
+  services/
+    agent_session_service.rs  # 多 agent 会话发现（claude/codex/omp）
+    claude_session_service.rs # Claude 专属索引处理
+    ...                       # 设置/项目/存储/更新/编辑器
   models/                     # 数据模型（app_settings、claude session 等）
   utils/                      # 外部终端集成
 ```
@@ -147,7 +153,7 @@ cargo run --manifest-path app/Cargo.toml
 
 ```bash
 cargo build --release --manifest-path app/Cargo.toml
-bash scripts/bundle-app.sh release   # 生成 ClaudeSessionSwitch.app（ad-hoc 签名）
+bash scripts/bundle-app.sh release   # 生成 AgentSessionSwitch.app（ad-hoc 签名）
 ```
 
 ---
@@ -170,7 +176,7 @@ bash scripts/bundle-app.sh release   # 生成 ClaudeSessionSwitch.app（ad-hoc �
 - 构建并发布 macOS 双架构产物：
   - `arm64`
   - `x64`（Intel）
-- 组装 `ClaudeSessionSwitch.app`、ad-hoc 签名并打包 DMG
+- 组装 `AgentSessionSwitch.app`、ad-hoc 签名并打包 DMG
 - 自动生成发布说明与 `SHA256SUMS`
 - 发布说明基于上一个 release 与当前 tag 之间的 commits/PRs（`generate_release_notes: true`）
 

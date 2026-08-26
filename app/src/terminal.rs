@@ -60,8 +60,12 @@ fn terminal_font(weight: FontWeight) -> gpui::Font {
 pub enum TerminalLaunch {
     /// Plain interactive login shell in the working directory.
     Plain,
-    /// `claude <args> -r <session_id>` with fallback to plain `claude <args>`.
-    ClaudeResume {
+    /// Resume an agent session in the working directory, falling back to a
+    /// fresh session of the same agent. An empty `session_id` skips the
+    /// resume attempt and just starts the agent. `claude_args` only applies
+    /// to Claude.
+    AgentResume {
+        agent: crate::models::agent::AgentKind,
         session_id: String,
         claude_args: Vec<String>,
     },
@@ -1239,27 +1243,51 @@ fn shell_command(launch: &TerminalLaunch) -> (String, Vec<String>) {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "/bin/zsh".to_string());
 
+    use crate::models::agent::AgentKind;
     match launch {
         TerminalLaunch::Plain => (shell, vec!["-i".into(), "-l".into()]),
-        TerminalLaunch::ClaudeResume {
+        TerminalLaunch::AgentResume {
+            agent,
             session_id,
             claude_args,
         } => {
-            let mut base_parts = vec!["claude".to_string()];
-            for arg in claude_args.iter().map(|value| value.trim()) {
-                if !arg.is_empty() {
-                    base_parts.push(shell_quote(arg));
+            let mut base_parts = vec![match agent {
+                AgentKind::Claude => "claude".to_string(),
+                AgentKind::Codex => "codex".to_string(),
+                AgentKind::OhMyPi => "omp".to_string(),
+            }];
+            if *agent == AgentKind::Claude {
+                for arg in claude_args.iter().map(|value| value.trim()) {
+                    if !arg.is_empty() {
+                        base_parts.push(shell_quote(arg));
+                    }
                 }
             }
             let base_command = base_parts.join(" ");
-            let mut resume_parts = base_parts.clone();
-            resume_parts.push("-r".to_string());
-            resume_parts.push(shell_quote(session_id));
-            let resume_command = resume_parts.join(" ");
-            let script = if is_fish_shell(&shell) {
-                format!("{}; or {}", resume_command, base_command)
+            let resume_parts = if session_id.trim().is_empty() {
+                None
             } else {
-                format!("{} || {}", resume_command, base_command)
+                let mut parts = base_parts.clone();
+                match agent {
+                    AgentKind::Claude => {
+                        parts.push("-r".to_string());
+                    }
+                    AgentKind::Codex => {
+                        parts.insert(1, "resume".to_string());
+                    }
+                    AgentKind::OhMyPi => {
+                        parts.push("-r".to_string());
+                    }
+                }
+                parts.push(shell_quote(session_id));
+                Some(parts.join(" "))
+            };
+            let script = match resume_parts {
+                Some(resume_command) if is_fish_shell(&shell) => {
+                    format!("{}; or {}", resume_command, base_command)
+                }
+                Some(resume_command) => format!("{} || {}", resume_command, base_command),
+                None => base_command,
             };
             (shell, vec!["-i".into(), "-l".into(), "-c".into(), script])
         }

@@ -1,10 +1,10 @@
 [package]
-name = "claude-session-switch"
-version = "0.2.1"
-description = "Desktop Claude Code session switcher with embedded terminal, project grouping, and resume support"
+name = "agent-session-switch"
+version = "0.3.0"
+description = "Desktop AI coding-agent session switcher (Claude / Codex / oh-my-pi) with embedded terminal, project grouping, and resume support"
 authors = ["Claude Code Team"]
 license = "MIT"
-repository = "https://github.com/MannixHu/claude-session-switch"
+repository = "https://github.com/MannixHu/agent-session-switch"
 edition = "2024"
 rust-version = "1.85"
 

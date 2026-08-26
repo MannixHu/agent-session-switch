@@ -9,7 +9,7 @@ set -eu
 
 profile="${1:-debug}"
 target="${2:-}"
-app_name="ClaudeSessionSwitch"
+app_name="AgentSessionSwitch"
 bundle_identifier="com.cloudcode.sessionswitch"
 root="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/app/Cargo.toml" | head -1)"
@@ -19,7 +19,7 @@ if [ -n "$target" ]; then
 else
     binary_dir="$root/app/target/$profile"
 fi
-binary="$binary_dir/claude-session-switch"
+binary="$binary_dir/agent-session-switch"
 [ -f "$binary" ] || { echo "missing binary: $binary (run cargo build first)" >&2; exit 1; }
 
 bundle="$binary_dir/$app_name.app"

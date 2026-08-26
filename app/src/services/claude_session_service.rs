@@ -356,6 +356,10 @@ impl ClaudeSessionService {
         let mut git_branch = String::new();
         let mut message_count: u32 = 0;
         let mut is_sidechain = false;
+        // Entries record the real working directory; decoded directory
+        // names mangle paths that contain hyphens, so prefer the recorded
+        // cwd whenever the file provides one.
+        let mut recorded_cwd: Option<String> = None;
 
         // Only read first N lines to avoid parsing huge files
         for line in reader.lines().take(50) {
@@ -372,6 +376,14 @@ impl ClaudeSessionService {
                 Ok(e) => e,
                 Err(_) => continue,
             };
+
+            if recorded_cwd.is_none() {
+                if let Some(cwd) = entry.cwd.as_deref() {
+                    if !cwd.trim().is_empty() {
+                        recorded_cwd = Some(cwd.trim().to_string());
+                    }
+                }
+            }
 
             if let Some(ref t) = entry.entry_type {
                 if t == "user" {
@@ -419,7 +431,9 @@ impl ClaudeSessionService {
 
         Ok(ClaudeSession {
             session_id: session_id.to_string(),
-            project_path: project_path.to_string(),
+            // Prefer the recorded cwd: decoding the directory name cannot
+            // distinguish hyphens from path separators.
+            project_path: recorded_cwd.unwrap_or_else(|| project_path.to_string()),
             summary: String::new(), // No summary available without index
             first_prompt,
             message_count,
