@@ -7,31 +7,6 @@ on:
     branches: [main, develop]
 
 jobs:
-  verify-frontend:
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: pnpm
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build frontend
-        run: pnpm run build:ui
-
-      - name: TypeScript type check
-        run: pnpm exec tsc --noEmit
-
   verify-rust:
     runs-on: macos-latest
 
@@ -47,20 +22,20 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: './app -> target'
 
       - name: Check compilation
-        run: cargo check
-        working-directory: src-tauri
+        run: cargo check --all-targets
+        working-directory: app
 
       - name: Lint with clippy
-        run: cargo clippy -- -D warnings
-        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: app
 
       - name: Check formatting
         run: cargo fmt --check
-        working-directory: src-tauri
+        working-directory: app
 
       - name: Run tests
         run: cargo test
-        working-directory: src-tauri
+        working-directory: app

@@ -40,27 +40,6 @@ jobs:
           ref: ${{ env.TAG_NAME }}
           fetch-depth: 0
 
-      - name: Ensure Cargo.lock for legacy tags
-        run: |
-          if [ ! -f src-tauri/Cargo.lock ]; then
-            echo "Cargo.lock missing in ${TAG_NAME}, restoring from main"
-            git fetch --depth 1 origin main
-            git show FETCH_HEAD:src-tauri/Cargo.lock > src-tauri/Cargo.lock
-          fi
-          test -f src-tauri/Cargo.lock
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: pnpm
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -69,76 +48,25 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: './app -> target'
 
-      - name: Detect Apple signing and notarization mode
-        id: signing
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+        working-directory: app
+
+      - name: Assemble app bundle
         run: |
-          REQUIRED_VARS=(
-            APPLE_CERTIFICATE
-            APPLE_CERTIFICATE_PASSWORD
-            APPLE_SIGNING_IDENTITY
-            APPLE_ID
-            APPLE_PASSWORD
-            APPLE_TEAM_ID
-          )
+          bundle="$(bash scripts/bundle-app.sh release ${{ matrix.target }})"
+          echo "APP_PATH=$bundle" >> "$GITHUB_ENV"
+          echo "Using bundle: $bundle"
 
-          MISSING_VARS=()
-          for VAR_NAME in "${REQUIRED_VARS[@]}"; do
-            if [ -z "${!VAR_NAME}" ]; then
-              MISSING_VARS+=("${VAR_NAME}")
-            fi
-          done
-
-          if [ "${#MISSING_VARS[@]}" -eq 0 ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "Apple signing/notarization: enabled"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Missing Apple secrets: ${MISSING_VARS[*]}"
-            echo "::warning::Fallback to unsigned build (release will work without notarization)."
-          fi
-
-      - name: Build Tauri app (signed/notarized)
-        if: steps.signing.outputs.enabled == 'true'
-        run: pnpm exec tauri build --target ${{ matrix.target }} --bundles app
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-      - name: Build Tauri app (unsigned fallback)
-        if: steps.signing.outputs.enabled != 'true'
-        run: pnpm exec tauri build --target ${{ matrix.target }} --bundles app
-
-      - name: Ensure bundle helper is executable
-        run: chmod +x scripts/find-bundle-env.sh
-
-      - name: Ad-hoc sign app bundle (unsigned fallback)
-        if: steps.signing.outputs.enabled != 'true'
+      - name: Ad-hoc sign app bundle
         run: |
-          eval "$(scripts/find-bundle-env.sh "${{ matrix.target }}")"
-
-          echo "Ad-hoc signing app bundle: ${APP_PATH}"
           codesign --force --deep --sign - "${APP_PATH}"
           codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
 
       - name: Collect release assets
         run: |
-          eval "$(scripts/find-bundle-env.sh "${{ matrix.target }}")"
-
-          echo "Using bundle directory: ${BUNDLE_DIR}"
-
           mkdir -p release-assets
           rm -f release-assets/*
 
@@ -174,7 +102,6 @@ jobs:
           fi
 
           rm -rf "${DMG_STAGING_DIR}"
-
           ls -lah release-assets
 
       - name: Upload artifacts

@@ -1,0 +1,46 @@
+[package]
+name = "claude-session-switch"
+version = "0.2.0"
+description = "Desktop Claude Code session switcher with embedded terminal, project grouping, and resume support"
+authors = ["Claude Code Team"]
+license = "MIT"
+repository = "https://github.com/MannixHu/claude-session-switch"
+edition = "2024"
+rust-version = "1.85"
+
+# The egoist/zed fork is upstream main plus PR #61945 (layered scene
+# rendering), pinned to the rev waku builds against so the GPUI API surface
+# stays stable for this app.
+[dependencies]
+gpui = { git = "https://github.com/egoist/zed", rev = "f9bad8941ea813982d6dfb10c0377ebf7716b3e7" }
+gpui_platform = { git = "https://github.com/egoist/zed", rev = "f9bad8941ea813982d6dfb10c0377ebf7716b3e7", features = [
+    "font-kit",
+] }
+alacritty_terminal = { version = "0.26", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5.0"
+uuid = { version = "1.9", features = ["v4", "serde"] }
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+log = "0.4"
+env_logger = "0.11"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+semver = "1.0"
+sha2 = "0.10"
+
+[profile.dev]
+# GPUI's text shaping and Taffy layout run unoptimized in dev builds and
+# become unusably slow at opt-level 0; keep app code incremental but compile
+# the framework hot paths optimized.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

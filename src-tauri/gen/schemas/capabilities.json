@@ -1,1 +1,0 @@
-{"main-capability":{"identifier":"main-capability","description":"Default capability for main window","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging","shell:default","dialog:allow-open","notification:default"]}}

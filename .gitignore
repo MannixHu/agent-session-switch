@@ -1,36 +1,11 @@
-.alma-snapshots
-
-# Build outputs
-dist/
-dist-ssr/
-build/
-out/
-coverage/
-
-# Tauri / Rust / toolchain outputs
-src-tauri/target/
+# Rust / toolchain outputs
 target/
 release/
 debug/
 
-# Dependencies and cache
-node_modules/
-.vite/
-**/.vite/
-.pnpm-store/
-.npm/
-.yarn/
-.parcel-cache/
-.cache/
-
 # Logs and diagnostics
 *.log
 *.log.*
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
 report.*.json
 
 # Environment files
@@ -43,14 +18,9 @@ report.*.json
 Thumbs.db
 *.tmp
 *.tmp.*
-.tmp/
-.tmp-*
 *.swp
 *.swo
 *~
-
-# Auto-generated config files
-__unconfig_*
 
 # IDE artifacts
 .idea/
