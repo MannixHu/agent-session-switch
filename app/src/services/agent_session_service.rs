@@ -43,22 +43,6 @@ impl AgentSessionService {
         sessions
     }
 
-    /// All known project working directories, in stable order.
-    #[allow(dead_code)]
-    pub fn list_project_paths() -> Vec<String> {
-        let mut paths: Vec<String> = ClaudeSessionService::list_claude_projects()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(_, path)| path)
-            .collect();
-        for session in Self::list_all_sessions() {
-            if !paths.contains(&session.project_path) {
-                paths.push(session.project_path);
-            }
-        }
-        paths
-    }
-
     /// Delete a session's backing file. Claude sessions go through their own
     /// service (sessions-index maintenance); Codex/omp files are removed
     /// directly after the id is validated.
@@ -68,21 +52,12 @@ impl AgentSessionService {
                 &session.project_path,
                 &session.session_id,
             ),
-            AgentKind::Codex => {
+            AgentKind::Codex | AgentKind::OhMyPi => {
                 validate_uuid(&session.session_id)?;
-                let path = codex_session_file(&session.session_id)?;
-                fs::remove_file(&path).map_err(|error| {
-                    format!(
-                        "Failed to delete session file {}: {}",
-                        path.display(),
-                        error
-                    )
-                })
-            }
-            AgentKind::OhMyPi => {
-                validate_uuid(&session.session_id)?;
-                let path = omp_session_file(&session.session_id)?;
-                fs::remove_file(&path).map_err(|error| {
+                let path = session.file_path.as_ref().ok_or_else(|| {
+                    format!("Session file location unknown: {}", session.session_id)
+                })?;
+                fs::remove_file(path).map_err(|error| {
                     format!(
                         "Failed to delete session file {}: {}",
                         path.display(),
@@ -119,6 +94,7 @@ impl AgentSessionService {
                     summary,
                     created: session.created,
                     modified: session.modified,
+                    file_path: None,
                 });
             }
         }
@@ -197,15 +173,6 @@ fn parse_json_line(line: &str) -> Option<serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(line.trim()).ok()
 }
 
-fn first_nonempty(parts: &[&str]) -> String {
-    parts
-        .iter()
-        .map(|p| p.trim())
-        .find(|p| !p.is_empty())
-        .unwrap_or("")
-        .to_string()
-}
-
 // ----- Codex -----
 
 fn codex_home() -> PathBuf {
@@ -274,23 +241,8 @@ fn parse_codex_file(path: &Path) -> Option<AgentSession> {
         summary,
         created,
         modified: file_mtime_rfc3339(path),
+        file_path: Some(path.to_path_buf()),
     })
-}
-
-fn codex_session_file(session_id: &str) -> Result<PathBuf, String> {
-    validate_uuid(session_id)?;
-    for root in codex_session_roots() {
-        for file in walk_jsonl(&root) {
-            if file
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.contains(session_id))
-            {
-                return Ok(file);
-            }
-        }
-    }
-    Err(format!("Codex session file not found: {}", session_id))
 }
 
 // ----- oh-my-pi (omp) -----
@@ -359,7 +311,7 @@ fn parse_omp_file(path: &Path) -> Option<AgentSession> {
     if id.is_empty() || cwd.is_empty() {
         return None;
     }
-    let summary = first_nonempty(&[&title, ""]);
+    let summary = title;
     Some(AgentSession {
         agent: AgentKind::OhMyPi,
         session_id: id,
@@ -367,19 +319,8 @@ fn parse_omp_file(path: &Path) -> Option<AgentSession> {
         summary,
         created,
         modified: file_mtime_rfc3339(path),
+        file_path: Some(path.to_path_buf()),
     })
-}
-
-fn omp_session_file(session_id: &str) -> Result<PathBuf, String> {
-    validate_uuid(session_id)?;
-    for root in omp_session_roots() {
-        for file in walk_jsonl(&root) {
-            if parse_omp_file(&file).is_some_and(|session| session.session_id == session_id) {
-                return Ok(file);
-            }
-        }
-    }
-    Err(format!("oh-my-pi session file not found: {}", session_id))
 }
 
 fn validate_uuid(session_id: &str) -> Result<(), String> {

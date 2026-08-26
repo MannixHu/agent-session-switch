@@ -1,6 +1,6 @@
 [package]
 name = "agent-session-switch"
-version = "0.3.0"
+version = "0.3.1"
 description = "Desktop AI coding-agent session switcher (Claude / Codex / oh-my-pi) with embedded terminal, project grouping, and resume support"
 authors = ["Claude Code Team"]
 license = "MIT"

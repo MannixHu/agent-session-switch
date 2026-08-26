@@ -17,15 +17,6 @@ impl AgentKind {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn display_name(self) -> &'static str {
-        match self {
-            Self::Claude => "Claude",
-            Self::Codex => "Codex",
-            Self::OhMyPi => "oh my pi",
-        }
-    }
-
     /// Short sidebar badge.
     pub fn badge(self) -> &'static str {
         match self {
@@ -50,4 +41,7 @@ pub struct AgentSession {
     #[allow(dead_code)]
     pub created: String,
     pub modified: String,
+    /// Backing session file for Codex / oh-my-pi (discovered at scan time),
+    /// used by delete. Claude deletes go through its own service.
+    pub file_path: Option<std::path::PathBuf>,
 }

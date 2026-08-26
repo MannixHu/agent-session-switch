@@ -581,10 +581,6 @@ pub struct TerminalView {
     session: Option<TerminalSession>,
     error: Option<String>,
     focus_handle: FocusHandle,
-    #[allow(dead_code)]
-    pub working_directory: PathBuf,
-    #[allow(dead_code)]
-    pub launch: TerminalLaunch,
     dyn_title: Option<String>,
     exited: bool,
     scroll_accumulator: f32,
@@ -643,8 +639,6 @@ impl TerminalView {
             session: None,
             error: None,
             focus_handle: cx.focus_handle(),
-            working_directory,
-            launch,
             dyn_title: None,
             exited: false,
             scroll_accumulator: 0.0,
@@ -662,19 +656,6 @@ impl TerminalView {
     /// Terminal title reported by OSC escape sequences, if any.
     pub fn dyn_title(&self) -> Option<&str> {
         self.dyn_title.as_deref()
-    }
-
-    #[allow(dead_code)]
-    pub fn has_exited(&self) -> bool {
-        self.exited
-    }
-
-    #[allow(dead_code)]
-    pub fn send_text(&mut self, text: &str) {
-        if let Some(session) = &self.session {
-            session.write(text.as_bytes().to_vec());
-            session.dirty.store(true, Ordering::Release);
-        }
     }
 
     fn poll(&mut self, cx: &mut Context<Self>) -> bool {

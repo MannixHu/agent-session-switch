@@ -14,11 +14,11 @@ pub fn label_button(
     label: impl Into<SharedString>,
     theme: &Theme,
     emphasized: bool,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let id = id.into();
+    let id: SharedString = id.into();
     div()
-        .id(id.clone())
+        .id(id)
         .px(px(12.0))
         .py(px(5.0))
         .rounded_md()
@@ -33,23 +33,9 @@ pub fn label_button(
                 .hover(|this| this.bg(theme.button_hover))
         })
         .child(label.into())
-        .on_mouse_down(MouseButton::Left, {
-            let id = id.clone();
-            move |event, window, cx| {
-                let click = ClickEvent {
-                    id: id.clone(),
-                    double: event.first_mouse || event.click_count >= 2,
-                };
-                on_click(&click, window, cx);
-            }
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            on_click(window, cx);
         })
-}
-
-pub struct ClickEvent {
-    #[allow(dead_code)]
-    pub id: SharedString,
-    #[allow(dead_code)]
-    pub double: bool,
 }
 
 /// Minimal single-line text input: click to focus, caret at end, arrow keys,

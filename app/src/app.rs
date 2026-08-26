@@ -165,7 +165,6 @@ impl Dashboard {
         if restore {
             if let Some(wanted) = last_opened {
                 let window_handle = window.window_handle();
-                let weak = cx.entity().downgrade();
                 cx.spawn(async move |this, cx| {
                     let sessions = cx
                         .background_executor()
@@ -177,7 +176,6 @@ impl Dashboard {
                     }) else {
                         return;
                     };
-                    let _ = weak;
                     let _ = window_handle.update(cx, |_handle, window, cx| {
                         let _ = _handle;
                         this.update(cx, |dashboard, cx| {
@@ -1690,7 +1688,7 @@ impl Dashboard {
                         false,
                         {
                             let this = cx.entity();
-                            move |_, window, cx| {
+                            move |window, cx| {
                                 this.update(cx, |this, cx| {
                                     this.overlay = Overlay::None;
                                     cx.notify();
@@ -1706,7 +1704,7 @@ impl Dashboard {
                         true,
                         {
                             let this = cx.entity();
-                            move |_, window, cx| {
+                            move |window, cx| {
                                 this.update(cx, |this, cx| {
                                     this.apply_settings_pane(window, cx);
                                 });
@@ -1813,7 +1811,7 @@ fn render_confirm_overlay(
                     false,
                     {
                         let this = cx.entity();
-                        move |_, window, cx| {
+                        move |window, cx| {
                             this.update(cx, |this, cx| {
                                 this.overlay = Overlay::None;
                                 cx.notify();
@@ -1830,7 +1828,7 @@ fn render_confirm_overlay(
                     {
                         let this = cx.entity();
                         let kind = state.kind.clone();
-                        move |_, window, cx| {
+                        move |window, cx| {
                             this.update(cx, |this, cx| {
                                 this.overlay = Overlay::None;
                                 match kind.clone() {
@@ -1889,7 +1887,7 @@ fn render_rename_overlay(
                     false,
                     {
                         let this = cx.entity();
-                        move |_, window, cx| {
+                        move |window, cx| {
                             this.update(cx, |this, cx| {
                                 this.overlay = Overlay::None;
                                 this.rename_field = None;
@@ -1906,7 +1904,7 @@ fn render_rename_overlay(
                     true,
                     {
                         let this = cx.entity();
-                        move |_, window, cx| {
+                        move |window, cx| {
                             this.update(cx, |this, cx| this.commit_rename(window, cx));
                             window.prevent_default();
                         }
@@ -1937,7 +1935,7 @@ fn render_project_menu_overlay(
         label: &'static str,
         on_pick: PickHandler,
     ) -> impl IntoElement {
-        label_button(id, label, theme, false, move |_, window, cx| {
+        label_button(id, label, theme, false, move |window, cx| {
             on_pick(window, cx);
         })
     }
@@ -2054,7 +2052,7 @@ fn render_project_menu_overlay(
                     false,
                     {
                         let this = cx.entity();
-                        move |_, window, cx| {
+                        move |window, cx| {
                             this.update(cx, |this, cx| {
                                 this.overlay = Overlay::None;
                                 cx.notify();
@@ -2188,7 +2186,7 @@ fn render_update_overlay(
             true,
             {
                 let this = cx.entity();
-                move |_, window, cx| {
+                move |window, cx| {
                     this.update(cx, |this, cx| this.download_update(cx));
                     window.prevent_default();
                 }
@@ -2201,7 +2199,7 @@ fn render_update_overlay(
             t(lang, "update_dialog_open_github"),
             theme,
             false,
-            move |_, window, cx| {
+            move |window, cx| {
                 cx.open_url(&url);
                 window.prevent_default();
             },
@@ -2214,7 +2212,7 @@ fn render_update_overlay(
         false,
         {
             let this = cx.entity();
-            move |_, window, cx| {
+            move |window, cx| {
                 this.update(cx, |this, cx| {
                     this.overlay = Overlay::None;
                     cx.notify();

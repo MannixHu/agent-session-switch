@@ -2,7 +2,6 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::models::terminal::TerminalApp;
-use uuid::Uuid;
 
 pub fn detect_available_terminals() -> Vec<TerminalApp> {
     let detected: Vec<TerminalApp> = TerminalApp::all()
@@ -120,116 +119,6 @@ end tell"#,
     }
 }
 
-#[allow(dead_code)]
-pub fn open_terminal_with_command(
-    terminal: TerminalApp,
-    path: &str,
-    command: &str,
-) -> Result<(), String> {
-    match terminal {
-        TerminalApp::Terminal => {
-            let script_path = create_temp_script(path, command, "cloudcode_terminal")?;
-            open_script_with_app(
-                "Terminal",
-                &script_path,
-                "Failed to open Terminal with command",
-            )
-        }
-        TerminalApp::ITerm2 => {
-            let script = format!(
-                r#"tell application "iTerm"
-    activate
-    create window with default profile
-    tell current window
-        tell current session
-            write text "cd \"{}\" && {}"
-        end tell
-    end tell
-end tell"#,
-                path.replace("\"", "\\\""),
-                command.replace("\"", "\\\"")
-            );
-
-            Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
-                .spawn()
-                .map_err(|error| format!("Failed to open iTerm2 with command: {}", error))?;
-            Ok(())
-        }
-        TerminalApp::WezTerm => {
-            let wezterm_path =
-                find_wezterm_path().ok_or_else(|| "WezTerm not found in PATH".to_string())?;
-
-            Command::new(&wezterm_path)
-                .arg("start")
-                .arg("--cwd")
-                .arg(path)
-                .arg("--")
-                .arg("zsh")
-                .arg("-lc")
-                .arg(command)
-                .spawn()
-                .map_err(|error| format!("Failed to open WezTerm with command: {}", error))?;
-            Ok(())
-        }
-        TerminalApp::Alacritty => {
-            let script_path = create_temp_script(path, command, "cloudcode_alacritty")?;
-            open_script_with_app(
-                "Alacritty",
-                &script_path,
-                "Failed to open Alacritty with command",
-            )
-        }
-        TerminalApp::Warp => {
-            let script_path = create_temp_script(path, command, "cloudcode_warp")?;
-            open_script_with_app("Warp", &script_path, "Failed to open Warp with command")
-        }
-        TerminalApp::Ghostty => {
-            let script_path = create_temp_script(path, command, "cloudcode_ghostty")?;
-            open_script_with_app(
-                "Ghostty",
-                &script_path,
-                "Failed to open Ghostty with command",
-            )
-        }
-        TerminalApp::Kitty => {
-            let kitty_path =
-                find_kitty_path().ok_or_else(|| "Kitty not found in PATH".to_string())?;
-
-            Command::new(&kitty_path)
-                .arg("--directory")
-                .arg(path)
-                .arg("zsh")
-                .arg("-lc")
-                .arg(command)
-                .spawn()
-                .map_err(|error| format!("Failed to open Kitty with command: {}", error))?;
-            Ok(())
-        }
-        TerminalApp::Tabby => {
-            let script_path = create_temp_script(path, command, "cloudcode_tabby")?;
-            open_script_with_app("Tabby", &script_path, "Failed to open Tabby with command")
-        }
-    }
-}
-
-fn open_script_with_app(
-    app_name: &str,
-    script_path: &str,
-    error_prefix: &str,
-) -> Result<(), String> {
-    Command::new("bash")
-        .arg("-c")
-        .arg(format!(
-            "chmod +x '{}' && open -a '{}' '{}'",
-            script_path, app_name, script_path
-        ))
-        .spawn()
-        .map_err(|error| format!("{}: {}", error_prefix, error))?;
-    Ok(())
-}
-
 fn open_app_with_path(app_name: &str, path: &str) -> Result<(), String> {
     Command::new("open")
         .arg("-a")
@@ -238,17 +127,6 @@ fn open_app_with_path(app_name: &str, path: &str) -> Result<(), String> {
         .spawn()
         .map_err(|error| format!("Failed to open {}: {}", app_name, error))?;
     Ok(())
-}
-
-fn create_temp_script(path: &str, command: &str, file_prefix: &str) -> Result<String, String> {
-    let script_id = Uuid::new_v4();
-    let script_path = format!("/tmp/{}_{}.sh", file_prefix, script_id);
-    let script_content = format!("#!/bin/bash\ncd \"{}\"\n{}", path, command);
-
-    std::fs::write(&script_path, script_content)
-        .map_err(|error| format!("Failed to write script: {}", error))?;
-
-    Ok(script_path)
 }
 
 fn command_exists(command: &str) -> bool {

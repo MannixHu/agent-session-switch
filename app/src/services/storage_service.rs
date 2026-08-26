@@ -45,12 +45,6 @@ impl StorageService {
         Self::app_data_dir().join("projects.json")
     }
 
-    #[allow(dead_code)]
-    pub fn sessions_file() -> PathBuf {
-        Self::app_data_dir().join("sessions.json")
-    }
-
-    #[allow(dead_code)]
     pub fn preferences_file() -> PathBuf {
         Self::app_data_dir().join("preferences.json")
     }
