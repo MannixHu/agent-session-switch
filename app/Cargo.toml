@@ -1,6 +1,6 @@
 [package]
 name = "claude-session-switch"
-version = "0.2.0"
+version = "0.2.1"
 description = "Desktop Claude Code session switcher with embedded terminal, project grouping, and resume support"
 authors = ["Claude Code Team"]
 license = "MIT"

@@ -56,22 +56,30 @@ impl StorageService {
     }
 
     pub fn read<T: for<'de> Deserialize<'de>>(
-        path: &PathBuf,
+        path: &Path,
     ) -> Result<T, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
         let data = serde_json::from_str(&content)?;
         Ok(data)
     }
 
-    pub fn write<T: Serialize>(path: &PathBuf, data: &T) -> Result<(), Box<dyn std::error::Error>> {
+    /// Atomically replace `path` with the serialized `data`: write to a temp
+    /// file, fsync it, then rename over the target. The fsync ensures a
+    /// crash cannot leave a renamed-but-empty file behind.
+    pub fn write<T: Serialize>(path: &Path, data: &T) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
         let content = serde_json::to_string_pretty(data)?;
-        let temp_path = Self::temp_path_for(path.as_path());
+        let temp_path = Self::temp_path_for(path);
 
-        fs::write(&temp_path, content)?;
+        {
+            use std::io::Write;
+            let mut file = fs::File::create(&temp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+        }
 
         match fs::rename(&temp_path, path) {
             Ok(()) => Ok(()),

@@ -7,6 +7,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 const GITHUB_LATEST_RELEASE_API_URL: &str =
     "https://api.github.com/repos/MannixHu/claude-session-switch/releases/latest";
@@ -57,6 +58,23 @@ impl UpdateService {
 
         Client::builder()
             .default_headers(headers)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|error| format!("Failed to build HTTP client: {}", error))
+    }
+
+    /// Like [`build_http_client`] but with a download-sized budget: the
+    /// installer can legitimately take minutes on slow links.
+    fn build_download_client() -> Result<Client, String> {
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static(GITHUB_API_ACCEPT));
+        headers.insert(USER_AGENT, HeaderValue::from_static(GITHUB_USER_AGENT));
+
+        Client::builder()
+            .default_headers(headers)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30 * 60))
             .build()
             .map_err(|error| format!("Failed to build HTTP client: {}", error))
     }
@@ -313,7 +331,11 @@ impl UpdateService {
 
         let destination_dir = Self::update_temp_dir()?;
         let destination_path = destination_dir.join(normalized_asset_name);
-        let client = Self::build_http_client()?;
+        // Download to a `.part` staging file and only rename after the
+        // checksum passes, so a crashed download can never be mistaken for
+        // a complete installer.
+        let partial_path = destination_dir.join(format!("{}.part", normalized_asset_name));
+        let client = Self::build_download_client()?;
         let mut response = client
             .get(normalized_url)
             .send()
@@ -321,10 +343,10 @@ impl UpdateService {
             .error_for_status()
             .map_err(|error| format!("Update asset request failed: {}", error))?;
 
-        let mut output = fs::File::create(&destination_path).map_err(|error| {
+        let mut output = fs::File::create(&partial_path).map_err(|error| {
             format!(
                 "Failed to create downloaded installer {}: {}",
-                destination_path.display(),
+                partial_path.display(),
                 error
             )
         })?;
@@ -347,10 +369,19 @@ impl UpdateService {
             .flush()
             .map_err(|error| format!("Failed to flush downloaded installer: {}", error))?;
 
-        if let Err(error) = Self::verify_sha256(&destination_path, expected_sha256) {
-            let _ = fs::remove_file(&destination_path);
+        if let Err(error) = Self::verify_sha256(&partial_path, expected_sha256) {
+            let _ = fs::remove_file(&partial_path);
             return Err(error);
         }
+
+        fs::rename(&partial_path, &destination_path).map_err(|error| {
+            let _ = fs::remove_file(&partial_path);
+            format!(
+                "Failed to finalize downloaded installer {}: {}",
+                destination_path.display(),
+                error
+            )
+        })?;
 
         Ok(destination_path)
     }

@@ -176,8 +176,16 @@ impl ClaudeSessionService {
             Self::scan_jsonl_files(&project_dir, &normalized_project_path)?
         };
 
-        // Sort by modified time descending (most recent first)
-        sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+        // Sort by parsed modification time descending (most recent first).
+        // Raw string comparison is wrong across formats: Claude writes
+        // "...Z" while chrono's to_rfc3339 produces "+00:00", and 'Z' sorts
+        // above both digits and '+'.
+        sessions.sort_by_key(|session| {
+            chrono::DateTime::parse_from_rfc3339(&session.modified)
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or(i64::MIN)
+        });
+        sessions.reverse();
 
         // Apply limit
         if let Some(limit) = limit {
@@ -481,6 +489,7 @@ impl ClaudeSessionService {
     ) -> Result<(), String> {
         let normalized_project_path = Self::normalize_non_empty(project_path, "Project path")?;
         let normalized_session_id = Self::normalize_non_empty(session_id, "Session id")?;
+        Self::validate_session_id(&normalized_session_id)?;
         let normalized_name = Self::normalize_non_empty(session_name, "Session name")?;
 
         let project_dir = Self::resolve_project_dir(&normalized_project_path)?
@@ -535,9 +544,20 @@ impl ClaudeSessionService {
     }
 
     /// Delete a Claude Code session JSONL file for the given project path and session ID.
+    /// Claude session ids are UUIDs. Validating the shape up front blocks
+    /// path-traversal payloads like `../../foo` from ever reaching the
+    /// filesystem join below.
+    fn validate_session_id(session_id: &str) -> Result<(), String> {
+        if uuid::Uuid::parse_str(session_id).is_ok() {
+            return Ok(());
+        }
+        Err(format!("Invalid Claude session id: {}", session_id))
+    }
+
     pub fn delete_claude_session(project_path: &str, session_id: &str) -> Result<(), String> {
         let normalized_project_path = Self::normalize_non_empty(project_path, "Project path")?;
         let normalized_session_id = Self::normalize_non_empty(session_id, "Session id")?;
+        Self::validate_session_id(&normalized_session_id)?;
 
         let project_dir = Self::resolve_project_dir(&normalized_project_path)?
             .ok_or_else(|| "Claude project directory not found for this project".to_string())?;
@@ -580,8 +600,17 @@ impl ClaudeSessionService {
         }
 
         let temp_path = Self::temp_path_for(path);
-        fs::write(&temp_path, content)
-            .map_err(|error| format!("Failed to write temporary sessions index: {}", error))?;
+        {
+            use std::io::Write;
+            let mut file = fs::File::create(&temp_path)
+                .map_err(|error| format!("Failed to write temporary sessions index: {}", error))?;
+            file.write_all(content.as_bytes())
+                .map_err(|error| format!("Failed to write temporary sessions index: {}", error))?;
+            // Flush to disk before the rename so a crash cannot leave the
+            // target file present but empty.
+            file.sync_all()
+                .map_err(|error| format!("Failed to flush sessions index: {}", error))?;
+        }
 
         match fs::rename(&temp_path, path) {
             Ok(()) => Ok(()),
@@ -645,7 +674,7 @@ mod tests {
             temp_home.join(".claude/projects/-Users-mannix-Project-PowerOffice-core813");
         fs::create_dir_all(&project_dir).unwrap();
 
-        let session_id = "session-1";
+        let session_id = "00000000-0000-4000-8000-000000000001";
         fs::write(project_dir.join(format!("{session_id}.jsonl")), "{}\n").unwrap();
         fs::write(
             project_dir.join("sessions-index.json"),
@@ -654,7 +683,7 @@ mod tests {
   "originalPath": "/Users/mannix/Project/PowerOffice_core813",
   "entries": [
     {
-      "sessionId": "session-1",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
       "summary": "Recovered session",
       "messageCount": 3,
       "created": "2026-03-08T00:00:00Z",
@@ -689,6 +718,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_session_id_rejects_path_traversal() {
+        assert!(
+            super::ClaudeSessionService::validate_session_id(
+                "15722961-c140-48f3-afb6-af67ce75026e"
+            )
+            .is_ok()
+        );
+        assert!(super::ClaudeSessionService::validate_session_id("../../etc/passwd").is_err());
+        assert!(super::ClaudeSessionService::validate_session_id("").is_err());
+    }
+
+    #[test]
     fn rename_claude_session_uses_original_path_match() {
         let _guard = storage_test_env_lock().lock().unwrap();
         let temp_home = unique_temp_home("rename-hyphen-dir");
@@ -696,7 +737,7 @@ mod tests {
             temp_home.join(".claude/projects/-Users-mannix-Project-PowerOffice-core813");
         fs::create_dir_all(&project_dir).unwrap();
 
-        let session_id = "session-1";
+        let session_id = "00000000-0000-4000-8000-000000000001";
         fs::write(project_dir.join(format!("{session_id}.jsonl")), "{}\n").unwrap();
         let index_path = project_dir.join("sessions-index.json");
         fs::write(
@@ -706,7 +747,7 @@ mod tests {
   "originalPath": "/Users/mannix/Project/PowerOffice_core813",
   "entries": [
     {
-      "sessionId": "session-1",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
       "summary": "Old name",
       "messageCount": 3,
       "created": "2026-03-08T00:00:00Z",

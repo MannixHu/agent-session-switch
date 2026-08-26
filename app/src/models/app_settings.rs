@@ -63,7 +63,7 @@ fn default_external_editor() -> String {
     "VSCode".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
     #[serde(default = "default_version")]
@@ -88,7 +88,7 @@ impl Default for AppSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceSettings {
     #[serde(default = "default_theme_preference")]
@@ -111,7 +111,7 @@ impl Default for AppearanceSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemePalettes {
     pub dark: ThemePalette,
@@ -127,7 +127,7 @@ impl Default for ThemePalettes {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemePalette {
     pub app_bg: String,
@@ -227,7 +227,7 @@ impl Default for ThemePalette {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClaudeSettings {
     #[serde(default)]
@@ -245,7 +245,7 @@ impl Default for ClaudeSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IntegrationSettings {
     #[serde(default = "default_external_terminal")]
@@ -263,7 +263,7 @@ impl Default for IntegrationSettings {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiSettings {
     #[serde(default)]
@@ -273,7 +273,7 @@ pub struct UiSettings {
     pub project_tree: ProjectTreeSettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LayoutSettings {
     #[serde(default = "default_sidebar_width")]
@@ -294,7 +294,7 @@ impl Default for LayoutSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowSettings {
     #[serde(default = "default_window_width")]
@@ -312,7 +312,7 @@ impl Default for WindowSettings {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProjectTreeSettings {
     #[serde(default)]
@@ -323,14 +323,14 @@ pub struct ProjectTreeSettings {
     pub project_order: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LastOpenedSession {
     pub project_path: String,
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionSettings {
     #[serde(default)]

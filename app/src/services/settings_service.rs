@@ -13,19 +13,51 @@ pub struct SettingsService {
 
 impl SettingsService {
     pub fn new() -> Self {
-        let settings = StorageService::read::<AppSettings>(&StorageService::preferences_file())
-            .map(Self::normalize)
-            .unwrap_or_else(|_| AppSettings::default());
-
-        if let Err(error) = StorageService::write(&StorageService::preferences_file(), &settings) {
-            log::warn!(
-                "Failed to persist normalized settings at startup: {}",
-                error
-            );
-        }
+        let preferences_file = StorageService::preferences_file();
+        let mut settings = match StorageService::read::<AppSettings>(&preferences_file) {
+            Ok(loaded) => {
+                let normalized = Self::normalize(loaded.clone());
+                // Persist at startup only when normalization actually
+                // changed something; never overwrite on transient IO errors.
+                if normalized != loaded {
+                    if let Err(error) = StorageService::write(&preferences_file, &normalized) {
+                        log::warn!(
+                            "Failed to persist normalized settings at startup: {}",
+                            error
+                        );
+                    }
+                }
+                normalized
+            }
+            Err(error) => {
+                // Back the unreadable file up before falling back to defaults
+                // so the user's data is never silently destroyed.
+                Self::backup_corrupt_file(&preferences_file, error.as_ref());
+                AppSettings::default()
+            }
+        };
+        let _ = &mut settings;
 
         Self {
             settings: Mutex::new(settings),
+        }
+    }
+
+    fn backup_corrupt_file(path: &std::path::Path, error: &dyn std::error::Error) {
+        if !path.exists() {
+            return;
+        }
+        let backup = path.with_extension("json.corrupt");
+        match std::fs::rename(path, &backup) {
+            Ok(()) => log::warn!(
+                "Unreadable settings file moved to {}: {error}",
+                backup.display()
+            ),
+            Err(backup_error) => log::warn!(
+                "Failed to back up unreadable settings file {} to {}: {backup_error}",
+                path.display(),
+                backup.display()
+            ),
         }
     }
 
