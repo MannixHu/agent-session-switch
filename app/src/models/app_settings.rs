@@ -326,17 +326,13 @@ pub struct ProjectTreeSettings {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LastOpenedSession {
-    pub project_path: String,
-    pub session_id: String,
+    /// App-session registry id (models::app_session::AppSession::id).
+    pub app_session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionSettings {
-    #[serde(default)]
-    pub aliases: HashMap<String, String>,
-    #[serde(default)]
-    pub hidden: HashMap<String, bool>,
     #[serde(default = "default_restore_last_opened_session")]
     pub restore_last_opened_session: bool,
     #[serde(default)]
@@ -346,8 +342,6 @@ pub struct SessionSettings {
 impl Default for SessionSettings {
     fn default() -> Self {
         Self {
-            aliases: HashMap::new(),
-            hidden: HashMap::new(),
             restore_last_opened_session: default_restore_last_opened_session(),
             last_opened: None,
         }

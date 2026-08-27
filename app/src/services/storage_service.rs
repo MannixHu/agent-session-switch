@@ -45,6 +45,10 @@ impl StorageService {
         Self::app_data_dir().join("projects.json")
     }
 
+    pub fn app_sessions_file() -> PathBuf {
+        Self::app_data_dir().join("sessions.json")
+    }
+
     pub fn preferences_file() -> PathBuf {
         Self::app_data_dir().join("preferences.json")
     }

@@ -35,13 +35,12 @@
 
 ### 1) 项目与会话管理（多 agent）
 
-- 从三种 agent 发现会话，按项目目录统一分组：
-  - **Claude Code** — `~/.claude/projects`（含 `sessions-index.json`）
-  - **Codex CLI** — `$CODEX_HOME/sessions`（rollout 文件）
-  - **oh my pi (omp)** — `~/.omp/agent/sessions`（含 profiles）
-- 会话行带 agent 徽标、摘要标签与修改时间
-- 会话重命名（别名；Claude 额外写回 `sessions-index.json`）、停止、删除
-- 项目快捷操作：新建 Claude / Codex / oh my pi 会话、外部终端/编辑器打开、移除
+- 项目**仅手动添加**：不会从 CLI 历史自动导入任何项目——添加哪个目录，侧边栏就显示哪个
+- 侧边栏**只显示在本应用里创建的会话**（记录在应用自己的 `sessions.json` 注册表中），CLI 磁盘上的既有会话一律不读取、不展示
+  - 新建 Claude 会话时预先绑定 id（`claude --session-id <uuid>`）
+  - Codex / oh my pi 会话在终端关闭时自动回填真实 id
+- ChatGPT 风格侧边栏：项目与会话统一搜索、一键新建会话、项目快捷操作（新建 Claude / Codex / oh my pi 会话、外部终端/编辑器打开、移除）
+- 会话行带 agent 徽标、显示名与修改时间；支持重命名、停止、删除（删除会同时清理 CLI 的底层会话文件）
 
 ### 2) 跨 agent 会话恢复
 

@@ -69,6 +69,15 @@ pub enum TerminalLaunch {
         session_id: String,
         claude_args: Vec<String>,
     },
+    /// Start a brand-new agent session. For Claude, `claude_session_id` pins
+    /// the CLI session id up front (`--session-id`) so the app can resume it
+    /// later; the other CLIs pick their own ids and the app backfills from
+    /// their session files.
+    AgentNew {
+        agent: crate::models::agent::AgentKind,
+        claude_session_id: Option<String>,
+        claude_args: Vec<String>,
+    },
 }
 
 /// Tracks the active terminal theme for OSC color queries.
@@ -1227,6 +1236,32 @@ fn shell_command(launch: &TerminalLaunch) -> (String, Vec<String>) {
     use crate::models::agent::AgentKind;
     match launch {
         TerminalLaunch::Plain => (shell, vec!["-i".into(), "-l".into()]),
+        TerminalLaunch::AgentNew {
+            agent,
+            claude_session_id,
+            claude_args,
+        } => {
+            let mut parts = vec![match agent {
+                AgentKind::Claude => "claude".to_string(),
+                AgentKind::Codex => "codex".to_string(),
+                AgentKind::OhMyPi => "omp".to_string(),
+            }];
+            if *agent == AgentKind::Claude {
+                for arg in claude_args.iter().map(|value| value.trim()) {
+                    if !arg.is_empty() {
+                        parts.push(shell_quote(arg));
+                    }
+                }
+                if let Some(session_id) = claude_session_id.as_deref().filter(|id| !id.is_empty()) {
+                    parts.push("--session-id".to_string());
+                    parts.push(shell_quote(session_id));
+                }
+            }
+            (
+                shell,
+                vec!["-i".into(), "-l".into(), "-c".into(), parts.join(" ")],
+            )
+        }
         TerminalLaunch::AgentResume {
             agent,
             session_id,
@@ -1562,4 +1597,79 @@ pub struct TerminalTab {
     pub project_path: Option<String>,
     pub session_id: Option<String>,
     pub view: gpui::Entity<TerminalView>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalLaunch;
+    use crate::models::agent::AgentKind;
+
+    fn script_for(launch: &TerminalLaunch) -> String {
+        let (_shell, args) = super::shell_command(launch);
+        args.last().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn agent_new_claude_pins_session_id_up_front() {
+        let script = script_for(&TerminalLaunch::AgentNew {
+            agent: AgentKind::Claude,
+            claude_session_id: Some("13775901-7713-4177-969c-66f0ff1ed545".to_string()),
+            claude_args: vec!["--dangerously-skip-permissions".to_string()],
+        });
+        assert_eq!(
+            script,
+            "claude '--dangerously-skip-permissions' --session-id '13775901-7713-4177-969c-66f0ff1ed545'"
+        );
+    }
+
+    #[test]
+    fn agent_new_without_session_id_starts_plain_agent() {
+        let script = script_for(&TerminalLaunch::AgentNew {
+            agent: AgentKind::Codex,
+            claude_session_id: None,
+            claude_args: Vec::new(),
+        });
+        assert_eq!(script, "codex");
+
+        let script = script_for(&TerminalLaunch::AgentNew {
+            agent: AgentKind::OhMyPi,
+            claude_session_id: None,
+            claude_args: Vec::new(),
+        });
+        assert_eq!(script, "omp");
+    }
+
+    #[test]
+    fn agent_resume_builds_per_agent_resume_with_fallback() {
+        let script = script_for(&TerminalLaunch::AgentResume {
+            agent: AgentKind::Claude,
+            session_id: "abc".to_string(),
+            claude_args: Vec::new(),
+        });
+        assert_eq!(script, "claude -r 'abc' || claude");
+
+        let script = script_for(&TerminalLaunch::AgentResume {
+            agent: AgentKind::Codex,
+            session_id: "abc".to_string(),
+            claude_args: Vec::new(),
+        });
+        assert_eq!(script, "codex resume 'abc' || codex");
+
+        let script = script_for(&TerminalLaunch::AgentResume {
+            agent: AgentKind::OhMyPi,
+            session_id: "abc".to_string(),
+            claude_args: Vec::new(),
+        });
+        assert_eq!(script, "omp -r 'abc' || omp");
+    }
+
+    #[test]
+    fn agent_resume_with_empty_session_id_starts_fresh() {
+        let script = script_for(&TerminalLaunch::AgentResume {
+            agent: AgentKind::Claude,
+            session_id: String::new(),
+            claude_args: vec!["--verbose".to_string()],
+        });
+        assert_eq!(script, "claude '--verbose'");
+    }
 }

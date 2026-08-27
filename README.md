@@ -37,13 +37,12 @@ In short: **keep native CLI flow, remove session-management friction.**
 
 ### 1) Project and session management (multi-agent)
 
-- Sessions discovered from three agents, grouped by project directory:
-  - **Claude Code** — `~/.claude/projects` (+ `sessions-index.json`)
-  - **Codex CLI** — `$CODEX_HOME/sessions` (rollout files)
-  - **oh-my-pi (omp)** — `~/.omp/agent/sessions` (+ profiles)
-- Per-session agent badge, summary label, and modification time
-- Session rename (aliases; Claude also updates `sessions-index.json`), stop, and delete
-- Per-project quick actions: new Claude / Codex / oh-my-pi session, open in external terminal / editor, remove
+- Projects are **manual-only**: nothing is auto-imported from your CLI history — add a folder and it appears in the sidebar
+- The sidebar lists **only sessions created inside this app** (kept in the app's own `sessions.json` registry); the CLIs' pre-existing sessions on disk are never listed
+  - New Claude sessions pin their id up front (`claude --session-id <uuid>`)
+  - Codex / oh-my-pi sessions get their id backfilled automatically when the terminal closes
+- ChatGPT-style sidebar: search across projects & sessions, one-click new session, per-project quick actions (new Claude / Codex / oh-my-pi session, open in external terminal / editor, remove)
+- Per-session agent badge, label, and modification time; rename, stop, and delete (delete also removes the CLI's backing session file)
 
 ### 2) Cross-agent session resume
 

@@ -440,48 +440,15 @@ impl SettingsService {
             })
             .collect();
 
-        settings.sessions.aliases = settings
-            .sessions
-            .aliases
-            .into_iter()
-            .filter_map(|(key, value)| {
-                let trimmed_key = key.trim();
-                let trimmed_value = value.trim();
-
-                if trimmed_key.is_empty() || trimmed_value.is_empty() {
-                    return None;
-                }
-
-                Some((trimmed_key.to_string(), trimmed_value.to_string()))
-            })
-            .collect();
-
-        settings.sessions.hidden = settings
-            .sessions
-            .hidden
-            .into_iter()
-            .filter_map(|(key, value)| {
-                let trimmed_key = key.trim();
-
-                if trimmed_key.is_empty() || !value {
-                    return None;
-                }
-
-                Some((trimmed_key.to_string(), true))
-            })
-            .collect();
-
         settings.sessions.last_opened = settings.sessions.last_opened.and_then(|last_opened| {
-            let project_path = last_opened.project_path.trim();
-            let session_id = last_opened.session_id.trim();
+            let app_session_id = last_opened.app_session_id.trim();
 
-            if project_path.is_empty() || session_id.is_empty() {
+            if app_session_id.is_empty() {
                 return None;
             }
 
             Some(LastOpenedSession {
-                project_path: project_path.to_string(),
-                session_id: session_id.to_string(),
+                app_session_id: app_session_id.to_string(),
             })
         });
 

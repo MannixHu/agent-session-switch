@@ -444,119 +444,6 @@ impl ClaudeSessionService {
         })
     }
 
-    /// List all Claude Code project directories and their original paths
-    pub fn list_claude_projects() -> Result<Vec<(String, String)>, String> {
-        let projects_dir = Self::claude_projects_dir()
-            .ok_or_else(|| "Cannot determine home directory".to_string())?;
-
-        if !projects_dir.exists() {
-            return Ok(vec![]);
-        }
-
-        let entries = fs::read_dir(&projects_dir)
-            .map_err(|e| format!("Failed to read Claude projects directory: {}", e))?;
-
-        let mut projects = Vec::new();
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-
-            let dir_name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-
-            // Skip hidden dirs and the current project's memory dir
-            if dir_name == "." || dir_name == ".." || dir_name == "memory" {
-                continue;
-            }
-
-            // Try to read sessions-index.json for the original path
-            let index_path = path.join("sessions-index.json");
-            let original_path = if index_path.exists() {
-                fs::read_to_string(&index_path)
-                    .ok()
-                    .and_then(|content| serde_json::from_str::<ClaudeSessionsIndex>(&content).ok())
-                    .and_then(|index| index.original_path)
-                    .unwrap_or_else(|| Self::decode_project_path(&dir_name))
-            } else {
-                Self::decode_project_path(&dir_name)
-            };
-
-            projects.push((dir_name, original_path));
-        }
-
-        Ok(projects)
-    }
-
-    /// Rename a Claude Code session by updating sessions-index.json metadata.
-    ///
-    /// This keeps session name consistent between this app and Claude CLI resume list
-    /// when Claude uses sessions-index.json for display metadata.
-    pub fn rename_claude_session(
-        project_path: &str,
-        session_id: &str,
-        session_name: &str,
-    ) -> Result<(), String> {
-        let normalized_project_path = Self::normalize_non_empty(project_path, "Project path")?;
-        let normalized_session_id = Self::normalize_non_empty(session_id, "Session id")?;
-        Self::validate_session_id(&normalized_session_id)?;
-        let normalized_name = Self::normalize_non_empty(session_name, "Session name")?;
-
-        let project_dir = Self::resolve_project_dir(&normalized_project_path)?
-            .ok_or_else(|| "Claude project directory not found for this project".to_string())?;
-        let index_path = project_dir.join("sessions-index.json");
-
-        if !index_path.exists() {
-            return Err("sessions-index.json not found for this project".to_string());
-        }
-
-        let content = fs::read_to_string(&index_path)
-            .map_err(|e| format!("Failed to read sessions index: {}", e))?;
-
-        let mut index_json: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse sessions index: {}", e))?;
-
-        let entries = index_json
-            .get_mut("entries")
-            .and_then(|value| value.as_array_mut())
-            .ok_or_else(|| "Invalid sessions-index.json format: entries missing".to_string())?;
-
-        let mut found = false;
-        for entry in entries.iter_mut() {
-            let is_match = entry
-                .get("sessionId")
-                .and_then(|value| value.as_str())
-                .map(|value| value == normalized_session_id)
-                .unwrap_or(false);
-
-            if !is_match {
-                continue;
-            }
-
-            entry["summary"] = serde_json::Value::String(normalized_name.to_string());
-            found = true;
-            break;
-        }
-
-        if !found {
-            return Err(format!(
-                "Session not found in index: {}",
-                normalized_session_id
-            ));
-        }
-
-        let serialized = serde_json::to_string_pretty(&index_json)
-            .map_err(|e| format!("Failed to serialize sessions index: {}", e))?;
-
-        Self::write_file_atomically(&index_path, &serialized)?;
-
-        Ok(())
-    }
-
     /// Delete a Claude Code session JSONL file for the given project path and session ID.
     /// Claude session ids are UUIDs. Validating the shape up front blocks
     /// path-traversal payloads like `../../foo` from ever reaching the
@@ -587,17 +474,6 @@ impl ClaudeSessionService {
         Ok(())
     }
 
-    /// Decode the directory name back to a path (best effort)
-    /// e.g., "-Users-mannix-Project-MeFlow3" -> "/Users/mannix/Project/MeFlow3"
-    fn decode_project_path(encoded: &str) -> String {
-        if let Some(stripped) = encoded.strip_prefix('-') {
-            // Replace leading dash with / and subsequent dashes with /
-            format!("/{}", stripped.replace('-', "/"))
-        } else {
-            encoded.replace('-', "/")
-        }
-    }
-
     fn normalize_non_empty(value: &str, field: &str) -> Result<String, String> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -605,60 +481,6 @@ impl ClaudeSessionService {
         }
 
         Ok(trimmed.to_string())
-    }
-
-    fn write_file_atomically(path: &Path, content: &str) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("Failed to prepare parent directory: {}", error))?;
-        }
-
-        let temp_path = Self::temp_path_for(path);
-        {
-            use std::io::Write;
-            let mut file = fs::File::create(&temp_path)
-                .map_err(|error| format!("Failed to write temporary sessions index: {}", error))?;
-            file.write_all(content.as_bytes())
-                .map_err(|error| format!("Failed to write temporary sessions index: {}", error))?;
-            // Flush to disk before the rename so a crash cannot leave the
-            // target file present but empty.
-            file.sync_all()
-                .map_err(|error| format!("Failed to flush sessions index: {}", error))?;
-        }
-
-        match fs::rename(&temp_path, path) {
-            Ok(()) => Ok(()),
-            Err(rename_error) => {
-                if path.exists() {
-                    fs::remove_file(path)
-                        .map_err(|error| format!("Failed to replace sessions index: {}", error))?;
-                    fs::rename(&temp_path, path).map_err(|error| {
-                        format!("Failed to finalize sessions index replacement: {}", error)
-                    })?;
-                    Ok(())
-                } else {
-                    let _ = fs::remove_file(&temp_path);
-                    Err(format!(
-                        "Failed to persist sessions index: {}",
-                        rename_error
-                    ))
-                }
-            }
-        }
-    }
-
-    fn temp_path_for(path: &Path) -> PathBuf {
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("sessions-index.json");
-
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-
-        path.with_file_name(format!("{}.{}.tmp", file_name, nanos))
     }
 }
 
@@ -741,59 +563,6 @@ mod tests {
         );
         assert!(super::ClaudeSessionService::validate_session_id("../../etc/passwd").is_err());
         assert!(super::ClaudeSessionService::validate_session_id("").is_err());
-    }
-
-    #[test]
-    fn rename_claude_session_uses_original_path_match() {
-        let _guard = storage_test_env_lock().lock().unwrap();
-        let temp_home = unique_temp_home("rename-hyphen-dir");
-        let project_dir =
-            temp_home.join(".claude/projects/-Users-mannix-Project-PowerOffice-core813");
-        fs::create_dir_all(&project_dir).unwrap();
-
-        let session_id = "00000000-0000-4000-8000-000000000001";
-        fs::write(project_dir.join(format!("{session_id}.jsonl")), "{}\n").unwrap();
-        let index_path = project_dir.join("sessions-index.json");
-        fs::write(
-            &index_path,
-            r#"{
-  "version": 1,
-  "originalPath": "/Users/mannix/Project/PowerOffice_core813",
-  "entries": [
-    {
-      "sessionId": "00000000-0000-4000-8000-000000000001",
-      "summary": "Old name",
-      "messageCount": 3,
-      "created": "2026-03-08T00:00:00Z",
-      "modified": "2026-03-09T00:00:00Z",
-      "projectPath": "/Users/mannix/Project/PowerOffice_core813",
-      "isSidechain": false
-    }
-  ]
-}"#,
-        )
-        .unwrap();
-
-        unsafe {
-            std::env::set_var("HOME", &temp_home);
-        }
-
-        ClaudeSessionService::rename_claude_session(
-            "/Users/mannix/Project/PowerOffice_core813",
-            session_id,
-            "New session name",
-        )
-        .unwrap();
-
-        let updated = fs::read_to_string(&index_path).unwrap();
-
-        unsafe {
-            std::env::remove_var("HOME");
-        }
-
-        assert!(updated.contains("\"summary\": \"New session name\""));
-
-        let _ = fs::remove_dir_all(temp_home);
     }
 
     #[test]

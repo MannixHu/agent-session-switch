@@ -9,8 +9,10 @@ use gpui::{App, AppContext, Context, Focusable, MouseButton, ScrollWheelEvent, W
 
 use crate::i18n::{AppLanguage, t, tf};
 use crate::models::agent::{AgentKind, AgentSession};
+use crate::models::app_session::AppSession;
 use crate::models::app_settings::{AppSettings, LastOpenedSession};
-use crate::services::agent_session_service::AgentSessionService;
+use crate::services::agent_session_service::{AgentSessionService, PendingBackfill};
+use crate::services::app_session_store::AppSessionStore;
 use crate::services::project_service::ProjectService;
 use crate::services::settings_service::SettingsService;
 use crate::services::storage_service::StorageService;
@@ -24,18 +26,23 @@ const SIDEBAR_MIN_WIDTH: f32 = 200.0;
 const SIDEBAR_MAX_WIDTH: f32 = 520.0;
 
 struct SidebarProject {
+    name: String,
     path: String,
-    sessions: Vec<AgentSession>,
-    sessions_loaded: bool,
+    /// Sessions created inside this app for this project (registry copies).
+    sessions: Vec<AppSession>,
 }
 
 impl SidebarProject {
     fn display_name(&self) -> String {
-        PathBuf::from(&self.path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(&self.path)
-            .to_string()
+        if self.name.trim().is_empty() {
+            PathBuf::from(&self.path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&self.path)
+                .to_string()
+        } else {
+            self.name.clone()
+        }
     }
 }
 
@@ -60,7 +67,7 @@ struct UpdateUiState {
 #[derive(Clone)]
 enum ConfirmKind {
     DeleteSession {
-        session: crate::models::agent::AgentSession,
+        session: crate::models::app_session::AppSession,
     },
     DeleteProject {
         path: String,
@@ -84,9 +91,14 @@ enum Overlay {
 pub struct Dashboard {
     settings_service: SettingsService,
     project_service: ProjectService,
+    session_store: AppSessionStore,
     settings: AppSettings,
     projects: Vec<SidebarProject>,
     expanded: std::collections::HashSet<String>,
+    /// Projects whose session list is fully expanded (bypasses the row cap).
+    show_all_sessions: std::collections::HashSet<String>,
+    search: String,
+    search_field: gpui::Entity<TextField>,
     tabs: Vec<TerminalTab>,
     active_tab: usize,
     sidebar_width: f32,
@@ -103,7 +115,20 @@ pub struct Dashboard {
 
 impl Dashboard {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let settings = SettingsService::new().get_settings().unwrap_or_default();
+        let settings_service = SettingsService::new();
+        let mut settings = settings_service.get_settings().unwrap_or_default();
+        let project_service = ProjectService::new();
+        let session_store = AppSessionStore::new();
+
+        // The Tauri-era tree settings keyed projects by UUID; the GPUI app
+        // keys by path. Migrate once so order/expanded state survive.
+        let stored_projects = project_service.list_projects().unwrap_or_default();
+        if Self::migrate_legacy_project_keys(&mut settings, &stored_projects) {
+            if let Err(error) = settings_service.set_settings(settings.clone()) {
+                log::warn!("Failed to persist project tree migration: {}", error);
+            }
+        }
+
         let expanded: std::collections::HashSet<String> = settings
             .ui
             .project_tree
@@ -117,6 +142,12 @@ impl Dashboard {
         let last_opened = settings.sessions.last_opened.clone();
 
         let settings_pane = cx.new(|cx| SettingsPane::new(settings.clone(), cx));
+
+        let search_placeholder = t(
+            AppLanguage::from_str(&settings.appearance.language),
+            "sidebar_search_placeholder",
+        );
+        let search_field = cx.new(|cx| TextField::new(search_placeholder, cx));
 
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe_window_appearance(window, |_, _, cx| {
@@ -133,15 +164,23 @@ impl Dashboard {
             }
             cx.notify();
         }));
+        subscriptions.push(cx.observe(&search_field, |_this, _field, cx| {
+            // Registry data is in memory — filtering is pure rendering.
+            cx.notify();
+        }));
 
         let focus_handle = cx.focus_handle();
 
         let mut dashboard = Self {
-            settings_service: SettingsService::new(),
-            project_service: ProjectService::new(),
+            settings_service,
+            project_service,
+            session_store,
             settings,
             projects: Vec::new(),
             expanded,
+            show_all_sessions: std::collections::HashSet::new(),
+            search: String::new(),
+            search_field,
             tabs: Vec::new(),
             active_tab: 0,
             sidebar_width: sidebar_width.clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH),
@@ -162,32 +201,77 @@ impl Dashboard {
         };
 
         dashboard.refresh_projects(cx);
+        // Codex / oh-my-pi sessions started in a previous run whose terminal
+        // closed while the file had not landed yet get one backfill chance at
+        // startup. No discovery for anything else.
+        for project_path in dashboard
+            .session_store
+            .pending()
+            .unwrap_or_default()
+            .iter()
+            .map(|record| record.project_path.clone())
+            .collect::<std::collections::HashSet<String>>()
+        {
+            dashboard.backfill_sessions_for(&project_path, cx);
+        }
         if restore {
             if let Some(wanted) = last_opened {
-                let window_handle = window.window_handle();
-                cx.spawn(async move |this, cx| {
-                    let sessions = cx
-                        .background_executor()
-                        .spawn(async move { AgentSessionService::list_all_sessions() })
-                        .await;
-                    let Some(session) = sessions.into_iter().find(|session| {
-                        session.project_path == wanted.project_path
-                            && session.session_id == wanted.session_id
-                    }) else {
-                        return;
-                    };
-                    let _ = window_handle.update(cx, |_handle, window, cx| {
-                        let _ = _handle;
-                        this.update(cx, |dashboard, cx| {
-                            dashboard.open_agent_session(&session, window, cx);
-                        })
-                        .ok();
-                    });
-                })
-                .detach();
+                if let Ok(Some(record)) = dashboard.session_store.get(&wanted.app_session_id) {
+                    dashboard.open_app_session(&record, window, cx);
+                }
             }
         }
         dashboard
+    }
+
+    /// Rewrite UUID-keyed project_tree entries (Tauri era) to path keys so the
+    /// persisted order/expanded state keeps applying. Returns whether
+    /// anything changed and needs persisting.
+    fn migrate_legacy_project_keys(
+        settings: &mut AppSettings,
+        stored: &[crate::models::project::Project],
+    ) -> bool {
+        let id_to_path: std::collections::HashMap<&str, &str> = stored
+            .iter()
+            .map(|project| (project.id.as_str(), project.path.as_str()))
+            .collect();
+
+        let tree = &mut settings.ui.project_tree;
+        let mut changed = false;
+
+        let original_order = tree.project_order.clone();
+        let mut migrated_order: Vec<String> = Vec::with_capacity(original_order.len());
+        for key in original_order {
+            let resolved = id_to_path
+                .get(key.as_str())
+                .map(|path| (*path).to_string())
+                .unwrap_or(key);
+            if !migrated_order.contains(&resolved) {
+                migrated_order.push(resolved);
+            }
+        }
+        if migrated_order != tree.project_order {
+            tree.project_order = migrated_order;
+            changed = true;
+        }
+
+        let original_expanded = tree.expanded_projects.clone();
+        let mut migrated_expanded: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+        for (key, open) in original_expanded {
+            let resolved = id_to_path
+                .get(key.as_str())
+                .map(|path| (*path).to_string())
+                .unwrap_or(key);
+            let slot = migrated_expanded.entry(resolved).or_insert(false);
+            *slot = *slot || open;
+        }
+        if migrated_expanded != tree.expanded_projects {
+            tree.expanded_projects = migrated_expanded;
+            changed = true;
+        }
+
+        changed
     }
 
     fn lang(&self) -> AppLanguage {
@@ -243,87 +327,136 @@ impl Dashboard {
 
     // ----- data -----
 
+    /// The sidebar lists manually added projects, each with the sessions
+    /// created inside this app (registry only — CLI history on disk is never
+    /// listed). Reads are synchronous and cheap.
     fn refresh_projects(&mut self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            let loaded = cx
-                .background_executor()
-                .spawn(async move { AgentSessionService::list_all_sessions() })
-                .await;
-            this.update(cx, |this, cx| {
-                let order = this.settings.ui.project_tree.project_order.clone();
-                let mut paths: Vec<String> = loaded
+        let order = self.settings.ui.project_tree.project_order.clone();
+        let registry = self.session_store.list().unwrap_or_default();
+        let mut projects: Vec<SidebarProject> = self
+            .project_service
+            .list_projects()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|stored| {
+                let mut sessions: Vec<AppSession> = registry
                     .iter()
-                    .map(|session| session.project_path.clone())
+                    .filter(|session| session.project_path == stored.path)
+                    .cloned()
                     .collect();
-                // User-added projects that do not have any agent sessions yet
-                // still need to appear in the sidebar.
-                for stored in this.project_service.list_projects().unwrap_or_default() {
-                    if !paths.contains(&stored.path) {
-                        paths.push(stored.path);
+                sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                SidebarProject {
+                    name: stored.name,
+                    path: stored.path,
+                    sessions,
+                }
+            })
+            .collect();
+        projects.sort_by_key(|project| {
+            let index = order.iter().position(|path| path == &project.path);
+            (index.is_none(), index.unwrap_or(usize::MAX))
+        });
+
+        self.projects = projects;
+        cx.notify();
+    }
+
+    /// Refresh one project's session rows after a registry change.
+    fn refresh_project_sessions(&mut self, project_path: &str, cx: &mut Context<Self>) {
+        let sessions = self
+            .session_store
+            .list_for_project(project_path)
+            .unwrap_or_default();
+        if let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.path == project_path)
+        {
+            project.sessions = sessions;
+        }
+        cx.notify();
+    }
+
+    /// Backfill CLI session ids for pending records of one project: the
+    /// session file only lands on disk once the CLI writes it, so this runs
+    /// when a session terminal closes (and once at startup).
+    fn backfill_sessions_for(&mut self, project_path: &str, cx: &mut Context<Self>) {
+        let pending: Vec<PendingBackfill> = self
+            .session_store
+            .pending()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|record| record.project_path == project_path)
+            .map(|record| PendingBackfill {
+                record_id: record.id,
+                agent: record.agent,
+                created_at: record.created_at,
+            })
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+
+        let known: std::collections::HashSet<String> = self
+            .session_store
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|record| {
+                let id = record.agent_session_id.trim().to_string();
+                (!id.is_empty()).then_some(id)
+            })
+            .collect();
+
+        let path = project_path.to_string();
+        let path_for_refresh = path.clone();
+        cx.spawn(async move |this, cx| {
+            let discovered = cx
+                .background_executor()
+                .spawn(async move { AgentSessionService::list_sessions_for_project(&path) })
+                .await;
+            let backfills = AgentSessionService::match_backfills(&pending, &discovered, &known);
+            this.update(cx, |this, cx| {
+                let default_title = this.t("default_session_title");
+                for backfill in backfills {
+                    log::info!(
+                        "backfilled session {} -> {}",
+                        backfill.record_id,
+                        backfill.agent_session_id
+                    );
+                    let file = backfill
+                        .file_path
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string());
+                    if let Err(error) = this.session_store.set_agent_session_id(
+                        &backfill.record_id,
+                        &backfill.agent_session_id,
+                        file.as_deref(),
+                    ) {
+                        log::warn!("Failed to backfill session id: {}", error);
+                        continue;
+                    }
+                    if !backfill.label.is_empty() {
+                        let _ = this.session_store.set_title_if_default(
+                            &backfill.record_id,
+                            default_title,
+                            &backfill.label,
+                        );
                     }
                 }
-
-                let mut projects: Vec<SidebarProject> = paths
-                    .into_iter()
-                    .map(|path| SidebarProject {
-                        sessions: loaded
-                            .iter()
-                            .filter(|session| session.project_path == path)
-                            .cloned()
-                            .collect(),
-                        path,
-                        sessions_loaded: true,
-                    })
-                    .collect();
-                projects.sort_by_key(|project| {
-                    let index = order.iter().position(|path| path == &project.path);
-                    (index.is_none(), index.unwrap_or(usize::MAX))
-                });
-
-                this.projects = projects;
-                cx.notify();
+                this.refresh_project_sessions(&path_for_refresh, cx);
             })
             .ok();
         })
         .detach();
     }
 
-    fn load_sessions_for(&mut self, _project_path: &str, cx: &mut Context<Self>) {
-        // Session lists are always refreshed with a full multi-agent scan;
-        // kept as a hook so callers stay stable.
-        self.refresh_projects(cx);
-    }
-
-    fn visible_sessions<'a>(&'a self, project: &'a SidebarProject) -> Vec<&'a AgentSession> {
-        project
-            .sessions
-            .iter()
-            .filter(|session| {
-                !self
-                    .settings
-                    .sessions
-                    .hidden
-                    .get(&session.session_id)
-                    .copied()
-                    .unwrap_or(false)
-            })
-            .collect()
-    }
-
-    fn session_label(&self, session: &AgentSession) -> String {
-        self.settings
-            .sessions
-            .aliases
-            .get(&session.session_id)
-            .cloned()
-            .filter(|alias| !alias.trim().is_empty())
-            .unwrap_or_else(|| {
-                if session.summary.trim().is_empty() {
-                    short_time(&session.modified)
-                } else {
-                    session.summary.trim().to_string()
-                }
-            })
+    fn session_label(&self, session: &AppSession) -> String {
+        if session.title.trim().is_empty() {
+            self.t("default_session_title").to_string()
+        } else {
+            session.title.trim().to_string()
+        }
     }
 
     fn claude_args(&self) -> Vec<String> {
@@ -342,89 +475,124 @@ impl Dashboard {
 
     // ----- terminal actions -----
 
-    fn tab_for_session(&self, project_path: &str, session_id: &str) -> Option<usize> {
-        self.tabs.iter().position(|tab| {
-            tab.session_id.as_deref() == Some(session_id)
-                && tab.project_path.as_deref() == Some(project_path)
-        })
+    fn tab_for_session(&self, app_session_id: &str) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|tab| tab.session_id.as_deref() == Some(app_session_id))
     }
 
-    fn open_agent_session(
+    /// Open (or focus) one registry session. Records without a backfilled CLI
+    /// id relaunch the agent fresh but stay bound to the same registry entry,
+    /// so the eventual session file still backfills into it.
+    fn open_app_session(
         &mut self,
-        session: &AgentSession,
+        session: &AppSession,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let project_path = session.project_path.clone();
-        let session_id = session.session_id.clone();
-        if let Some(index) = self.tab_for_session(&project_path, &session_id) {
+        let app_session_id = session.id.clone();
+        if let Some(index) = self.tab_for_session(&app_session_id) {
             self.active_tab = index;
             cx.notify();
             return;
         }
 
-        // Sessions discovered by scanning are resumable by construction; a
-        // stale Claude entry (file deleted between scans) is hidden the same
-        // way the previous frontend did.
-        let stale_claude_entry = session.agent == AgentKind::Claude
-            && !crate::services::claude_session_service::ClaudeSessionService::list_sessions_for_project(
-                &project_path, None,
-            )
-            .map(|sessions| {
-                sessions
-                    .iter()
-                    .any(|s| s.session_id == session_id && !s.is_sidechain)
-            })
-            .unwrap_or(false);
-        if stale_claude_entry {
-            self.settings
-                .sessions
-                .hidden
-                .insert(session_id.clone(), true);
-            self.persist_settings(cx);
-            self.show_status(self.t("status_session_hidden_invalid").to_string(), cx);
+        let title = format!(
+            "[{}] {}",
+            session.agent.badge(),
+            self.session_label(session)
+        );
+        let resume_id = session.agent_session_id.trim().to_string();
+        let launch = if resume_id.is_empty() {
+            TerminalLaunch::AgentNew {
+                agent: session.agent,
+                claude_session_id: None,
+                claude_args: self.claude_args(),
+            }
+        } else {
+            TerminalLaunch::AgentResume {
+                agent: session.agent,
+                session_id: resume_id,
+                claude_args: self.claude_args(),
+            }
+        };
+        let view = cx.new(|cx| TerminalView::new(PathBuf::from(&project_path), launch, cx));
+        self.tabs.push(TerminalTab {
+            key: app_session_id.clone(),
+            title,
+            project_path: Some(project_path),
+            session_id: Some(app_session_id.clone()),
+            view,
+        });
+        self.active_tab = self.tabs.len() - 1;
+        self.focus_active_terminal(window, cx);
+        let _ = self.session_store.touch(&app_session_id);
+        self.settings.sessions.last_opened = Some(LastOpenedSession {
+            app_session_id: app_session_id.clone(),
+        });
+        self.persist_settings(cx);
+        self.refresh_project_sessions(&session.project_path, cx);
+        cx.notify();
+    }
+
+    /// Create a registry session and immediately start it in a new terminal
+    /// tab. Claude's CLI session id is pinned up front via `--session-id`;
+    /// Codex / oh-my-pi records start pending and get their id backfilled
+    /// when the terminal closes.
+    fn new_agent_session(
+        &mut self,
+        project_path: &str,
+        agent: AgentKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let claude_session_id = if agent == AgentKind::Claude {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            String::new()
+        };
+        let record = AppSession::new(
+            project_path.to_string(),
+            agent,
+            self.t("default_session_title").to_string(),
+            claude_session_id.clone(),
+        );
+        if let Err(error) = self.session_store.insert(record.clone()) {
+            self.show_status(
+                self.tf("status_session_create_failed", &[("message", &error)]),
+                cx,
+            );
             return;
         }
 
-        let label = self
-            .projects
-            .iter()
-            .find(|project| project.path == project_path)
-            .and_then(|project| {
-                project
-                    .sessions
-                    .iter()
-                    .find(|candidate| candidate.session_id == session_id)
-            })
-            .map(|found| self.session_label(found))
-            .unwrap_or_else(|| session_id.clone());
-        let title = format!("[{}] {}", session.agent.badge(), label);
-
+        let title = format!("[{}] {}", agent.badge(), self.session_label(&record));
         let view = cx.new(|cx| {
             TerminalView::new(
-                PathBuf::from(&project_path),
-                TerminalLaunch::AgentResume {
-                    agent: session.agent,
-                    session_id: session_id.clone(),
+                PathBuf::from(project_path),
+                TerminalLaunch::AgentNew {
+                    agent,
+                    claude_session_id: (!claude_session_id.is_empty())
+                        .then_some(claude_session_id.clone()),
                     claude_args: self.claude_args(),
                 },
                 cx,
             )
         });
         self.tabs.push(TerminalTab {
-            key: format!("{}:{}", project_path, session_id),
+            key: record.id.clone(),
             title,
-            project_path: Some(project_path.clone()),
-            session_id: Some(session_id.clone()),
+            project_path: Some(project_path.to_string()),
+            session_id: Some(record.id.clone()),
             view,
         });
         self.active_tab = self.tabs.len() - 1;
         self.focus_active_terminal(window, cx);
         self.settings.sessions.last_opened = Some(LastOpenedSession {
-            project_path: project_path.clone(),
-            session_id: session_id.clone(),
+            app_session_id: record.id.clone(),
         });
         self.persist_settings(cx);
+        self.refresh_project_sessions(project_path, cx);
         cx.notify();
     }
 
@@ -433,42 +601,6 @@ impl Dashboard {
             let handle = tab.view.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
         }
-    }
-
-    fn new_agent_session(
-        &mut self,
-        project_path: &str,
-        agent: AgentKind,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let project_name = PathBuf::from(project_path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("agent")
-            .to_string();
-        let label = format!("[{}] {}", agent.badge(), project_name);
-        let view = cx.new(|cx| {
-            TerminalView::new(
-                PathBuf::from(project_path),
-                TerminalLaunch::AgentResume {
-                    agent,
-                    session_id: String::new(),
-                    claude_args: self.claude_args(),
-                },
-                cx,
-            )
-        });
-        self.tabs.push(TerminalTab {
-            key: format!("{}:new-{}-{}", project_path, agent.key(), self.tabs.len()),
-            title: label,
-            project_path: Some(project_path.to_string()),
-            session_id: None,
-            view,
-        });
-        self.active_tab = self.tabs.len() - 1;
-        self.focus_active_terminal(window, cx);
-        cx.notify();
     }
 
     fn new_plain_terminal(
@@ -501,7 +633,14 @@ impl Dashboard {
 
     fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.tabs.len() {
-            self.tabs.remove(index);
+            let closed = self.tabs.remove(index);
+            // A closed agent terminal just wrote its session file; pair any
+            // pending registry records with it now.
+            if let Some(project_path) = closed.project_path {
+                if closed.session_id.is_some() {
+                    self.backfill_sessions_for(&project_path, cx);
+                }
+            }
             if self.active_tab >= self.tabs.len() {
                 self.active_tab = self.tabs.len().saturating_sub(1);
             }
@@ -517,7 +656,6 @@ impl Dashboard {
             self.expanded.remove(path);
         } else {
             self.expanded.insert(path.to_string());
-            self.load_sessions_for(path, cx);
         }
         self.settings
             .ui
@@ -575,46 +713,37 @@ impl Dashboard {
             .map(|field| field.read(cx).value().trim().to_string());
         if let Some(value) = value {
             if value.is_empty() {
-                self.settings.sessions.aliases.remove(&session_id);
+                let _ = self
+                    .session_store
+                    .rename(&session_id, self.t("default_session_title"));
                 self.show_status(self.t("status_session_alias_cleared").to_string(), cx);
+            } else if let Err(error) = self.session_store.rename(&session_id, &value) {
+                log::warn!("Failed to rename session {}: {}", session_id, error);
+                self.show_status(
+                    self.tf("status_session_rename_failed", &[("message", &error)]),
+                    cx,
+                );
             } else {
-                let session_ref = self
-                    .projects
-                    .iter()
-                    .flat_map(|project| project.sessions.iter())
-                    .find(|session| session.session_id == session_id)
-                    .cloned();
-                if let Some(found) = session_ref {
-                    if found.agent == AgentKind::Claude {
-                        if let Err(error) =
-                            crate::services::claude_session_service::ClaudeSessionService::rename_claude_session(
-                                &found.project_path, &session_id, &value,
-                            )
-                        {
-                            log::warn!(
-                                "Failed to rename claude session {}: {}",
-                                session_id,
-                                error
-                            );
-                        }
-                    }
-                }
-                self.settings
-                    .sessions
-                    .aliases
-                    .insert(session_id.clone(), value.clone());
                 self.show_status(
                     self.tf("status_session_alias_saved", &[("name", &value)]),
                     cx,
                 );
             }
-            self.persist_settings(cx);
             if let Some(tab) = self
                 .tabs
                 .iter_mut()
                 .find(|tab| tab.session_id.as_deref() == Some(&session_id))
             {
-                tab.title = value;
+                let agent = tab
+                    .title
+                    .strip_prefix('[')
+                    .and_then(|rest| rest.split(']').next())
+                    .unwrap_or("")
+                    .to_string();
+                tab.title = format!("[{}] {}", agent, value);
+            }
+            if let Some(record) = self.session_store.get(&session_id).unwrap_or(None) {
+                self.refresh_project_sessions(&record.project_path, cx);
             }
         }
         self.overlay = Overlay::None;
@@ -623,7 +752,7 @@ impl Dashboard {
         cx.notify();
     }
 
-    fn request_delete_session(&mut self, session: &AgentSession, cx: &mut Context<Self>) {
+    fn request_delete_session(&mut self, session: &AppSession, cx: &mut Context<Self>) {
         let label = self.session_label(session);
         let message = format!("{}\n\n{}", label, self.t("confirm_delete_session"));
         self.overlay = Overlay::Confirm(ConfirmState {
@@ -635,27 +764,41 @@ impl Dashboard {
         cx.notify();
     }
 
-    fn perform_delete_session(&mut self, session: &AgentSession, cx: &mut Context<Self>) {
-        match AgentSessionService::delete_session(session) {
-            Ok(()) => {
-                if let Some(index) =
-                    self.tab_for_session(&session.project_path, &session.session_id)
-                {
-                    self.close_tab(index, cx);
-                }
-                self.show_status(self.t("status_session_deleted").to_string(), cx);
-                self.refresh_projects(cx);
-            }
-            Err(error) => {
+    fn perform_delete_session(&mut self, session: &AppSession, cx: &mut Context<Self>) {
+        let Some(removed) = self.session_store.remove(&session.id).unwrap_or(None) else {
+            self.show_status(self.t("status_session_delete_failed").to_string(), cx);
+            return;
+        };
+        if let Some(index) = self.tab_for_session(&session.id) {
+            self.close_tab(index, cx);
+        }
+
+        // Also remove the CLI's backing session file when the id is known.
+        // A failure here keeps the registry entry deleted — the session is
+        // already unresumable from this app — but is surfaced in the log.
+        let cli_id = removed.agent_session_id.trim().to_string();
+        if !cli_id.is_empty() {
+            let file_path = removed.agent_session_file.as_ref().map(PathBuf::from);
+            if let Err(error) = AgentSessionService::delete_session(&AgentSession {
+                agent: removed.agent,
+                session_id: cli_id.clone(),
+                project_path: removed.project_path.clone(),
+                summary: String::new(),
+                created: String::new(),
+                modified: String::new(),
+                file_path,
+            }) {
                 log::warn!(
-                    "Failed to delete {} session {}: {}",
-                    session.agent.key(),
-                    session.session_id,
+                    "Failed to delete {} session file {}: {}",
+                    removed.agent.key(),
+                    cli_id,
                     error
                 );
-                self.show_status(self.t("status_session_delete_failed").to_string(), cx);
             }
         }
+
+        self.show_status(self.t("status_session_deleted").to_string(), cx);
+        self.refresh_project_sessions(&session.project_path, cx);
     }
 
     fn request_remove_project(&mut self, path: &str, cx: &mut Context<Self>) {
@@ -690,6 +833,7 @@ impl Dashboard {
             }
         }
         self.projects.retain(|project| project.path != path);
+        self.show_all_sessions.remove(path);
         self.settings
             .ui
             .project_tree
@@ -743,6 +887,14 @@ impl Dashboard {
                                 .project_order
                                 .push(path_string.clone());
                         }
+                        // A freshly added project should be immediately
+                        // useful: expand it and show its sessions.
+                        this.expanded.insert(path_string.clone());
+                        this.settings
+                            .ui
+                            .project_tree
+                            .expanded_projects
+                            .insert(path_string.clone(), true);
                         this.persist_settings(cx);
                         this.show_status(this.tf("status_project_added", &[("name", &name)]), cx);
                         this.refresh_projects(cx);
@@ -791,11 +943,7 @@ impl Dashboard {
     }
 
     pub fn new_terminal_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let project = self
-            .projects
-            .iter()
-            .find(|project| self.expanded.contains(&project.path))
-            .map(|project| project.path.clone());
+        let project = self.target_project_path();
         self.new_plain_terminal(project.as_deref(), window, cx);
     }
 
@@ -805,14 +953,19 @@ impl Dashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let project = self
-            .projects
-            .iter()
-            .find(|project| self.expanded.contains(&project.path))
-            .map(|project| project.path.clone());
-        if let Some(project) = project {
+        if let Some(project) = self.target_project_path() {
             self.new_agent_session(&project, agent, window, cx);
         }
+    }
+
+    /// Where quick actions (⌘N new session, ⌘T terminal) land: the first
+    /// expanded project, else the first project in the sidebar.
+    fn target_project_path(&self) -> Option<String> {
+        self.projects
+            .iter()
+            .find(|project| self.expanded.contains(&project.path))
+            .or_else(|| self.projects.first())
+            .map(|project| project.path.clone())
     }
 
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -1104,47 +1257,167 @@ impl Render for Dashboard {
 
 impl Dashboard {
     fn render_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let search = self.search.trim().to_lowercase();
+        let searching = !search.is_empty();
+
+        // ----- header: search + add project -----
+
+        let search_field = self.search_field.clone();
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(10.0))
+            .pt(px(10.0))
+            .pb(px(8.0))
+            .child(
+                div()
+                    .id("sidebar-search-icon")
+                    .flex_none()
+                    .text_size(px(12.0))
+                    .text_color(theme.text_sub)
+                    .child("⌕"),
+            )
+            .child(div().flex_1().min_w_0().child(search_field))
+            .child(
+                div()
+                    .id("sidebar-add-project")
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(26.0))
+                    .rounded_md()
+                    .text_size(px(14.0))
+                    .text_color(theme.text_sub)
+                    .hover(|this| this.bg(theme.hover_bg).text_color(theme.text_main))
+                    .child("＋")
+                    .on_click({
+                        let this = cx.entity();
+                        move |_, window, cx| {
+                            this.update(cx, |this, cx| this.add_project(cx));
+                            window.prevent_default();
+                        }
+                    }),
+            );
+
+        // ----- new session action -----
+
+        let new_session = div()
+            .id("sidebar-new-session")
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .py(px(6.0))
+            .mx(px(8.0))
+            .mb(px(4.0))
+            .rounded_md()
+            .bg(theme.button_bg)
+            .text_size(px(12.5))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(theme.text_main)
+            .hover(|this| this.bg(theme.button_hover))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(12.0))
+                    .text_color(theme.text_sub)
+                    .child("✎"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .child(self.t("sidebar_new_session").to_string()),
+            )
+            .on_click({
+                let this = cx.entity();
+                move |_, window, cx| {
+                    this.update(cx, |this, cx| match this.target_project_path() {
+                        Some(project) => {
+                            this.new_agent_session(&project, AgentKind::Claude, window, cx)
+                        }
+                        None => {
+                            this.show_status(this.t("status_need_project_first").to_string(), cx)
+                        }
+                    });
+                    window.prevent_default();
+                }
+            });
+
+        // ----- project list -----
+
         let mut list = div()
             .id("sidebar-list")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .px(px(8.0));
 
         if self.projects.is_empty() {
             list = list.child(
                 div()
-                    .px(px(12.0))
-                    .py(px(10.0))
+                    .id("sidebar-empty")
+                    .px(px(8.0))
+                    .py(px(12.0))
                     .text_size(px(12.0))
                     .text_color(theme.text_sub)
                     .child(self.t("tree_no_projects").to_string()),
             );
+        } else {
+            list = list.child(
+                div()
+                    .id("sidebar-section-projects")
+                    .px(px(8.0))
+                    .pt(px(6.0))
+                    .pb(px(2.0))
+                    .text_size(px(11.0))
+                    .text_color(theme.text_sub)
+                    .child(self.t("section_projects").to_string()),
+            );
         }
 
+        let mut matched_any = false;
         let project_paths: Vec<String> = self.projects.iter().map(|p| p.path.clone()).collect();
         for path in project_paths {
             let Some(index) = self.projects.iter().position(|p| p.path == path) else {
                 continue;
             };
-            let is_expanded = self.expanded.contains(&path);
-            let display_name = self.projects[index].display_name().to_string();
-            let sessions = self.visible_sessions(&self.projects[index]);
+            let display_name = self.projects[index].display_name();
+            let is_expanded = searching || self.expanded.contains(&path);
+
+            let sessions: Vec<&AppSession> = self.projects[index]
+                .sessions
+                .iter()
+                .filter(|session| {
+                    !searching || self.session_label(session).to_lowercase().contains(&search)
+                })
+                .collect();
+
+            let name_matches = searching
+                && (display_name.to_lowercase().contains(&search)
+                    || path.to_lowercase().contains(&search));
+            if searching && !name_matches && sessions.is_empty() {
+                continue;
+            }
+            matched_any = true;
             let session_count = sessions.len();
+            let show_all =
+                searching || self.show_all_sessions.contains(&path) || sessions.len() <= 8;
 
             let mut rows = Vec::new();
 
             // Project row.
             let path_for_actions = path.clone();
             let path_for_toggle = path.clone();
-            let path_for_new = path.clone();
             let project_row = div()
                 .id(("project", index))
                 .w_full()
                 .flex()
                 .items_center()
-                .gap(px(4.0))
-                .px(px(6.0))
-                .py(px(4.0))
+                .gap(px(6.0))
+                .px(px(8.0))
+                .py(px(5.0))
                 .rounded_md()
                 .text_size(px(12.5))
                 .hover(|this| this.bg(theme.hover_bg))
@@ -1174,30 +1447,8 @@ impl Dashboard {
                 )
                 .child(
                     div()
-                        .id(("project-new-claude", index))
-                        .text_size(px(11.0))
-                        .text_color(theme.text_sub)
-                        .hover(|this| this.text_color(theme.text_main))
-                        .child("+")
-                        .on_click({
-                            let this = cx.entity();
-                            move |_, window, cx| {
-                                this.update(cx, |this, cx| {
-                                    this.new_agent_session(
-                                        &path_for_new,
-                                        AgentKind::Claude,
-                                        window,
-                                        cx,
-                                    )
-                                });
-                                window.prevent_default();
-                                cx.stop_propagation();
-                            }
-                        }),
-                )
-                .child(
-                    div()
                         .id(("project-more", index))
+                        .flex_none()
                         .text_size(px(11.0))
                         .text_color(theme.text_sub)
                         .hover(|this| this.text_color(theme.text_main))
@@ -1219,37 +1470,28 @@ impl Dashboard {
             rows.push(project_row.into_any_element());
 
             if is_expanded {
-                if !self.projects[index].sessions_loaded {
-                    rows.push(
-                        div()
-                            .id(("project-loading", index))
-                            .pl(px(30.0))
-                            .py(px(2.0))
-                            .text_size(px(11.0))
-                            .text_color(theme.text_sub)
-                            .child("…")
-                            .into_any_element(),
-                    );
-                } else if sessions.is_empty() {
-                    rows.push(
-                        div()
-                            .id(("project-empty", index))
-                            .pl(px(30.0))
-                            .py(px(2.0))
-                            .text_size(px(11.0))
-                            .text_color(theme.text_sub)
-                            .child(self.t("tree_no_sessions").to_string())
-                            .into_any_element(),
-                    );
+                if sessions.is_empty() {
+                    if !searching {
+                        rows.push(
+                            div()
+                                .id(("project-empty", index))
+                                .pl(px(30.0))
+                                .py(px(2.0))
+                                .text_size(px(11.0))
+                                .text_color(theme.text_sub)
+                                .child(self.t("tree_no_sessions").to_string())
+                                .into_any_element(),
+                        );
+                    }
                 } else {
                     let limit = 8;
                     let mut row_id = index * 1000;
                     for (session_index, session) in sessions.iter().enumerate() {
-                        let _ = session_index;
                         row_id += 1;
-                        if session_index >= limit {
+                        if session_index >= limit && !show_all {
                             let remaining = session_count - limit;
                             let count_string = remaining.to_string();
+                            let path_for_more = path.clone();
                             rows.push(
                                 div()
                                     .id(("session-more", index))
@@ -1257,24 +1499,35 @@ impl Dashboard {
                                     .py(px(2.0))
                                     .text_size(px(11.0))
                                     .text_color(theme.text_sub)
+                                    .hover(|this| this.text_color(theme.text_main))
                                     .child(
                                         self.t("show_more_count").replace("{count}", &count_string),
                                     )
+                                    .on_click({
+                                        let this = cx.entity();
+                                        move |_, window, cx| {
+                                            this.update(cx, |this, cx| {
+                                                this.show_all_sessions
+                                                    .insert(path_for_more.clone());
+                                                cx.notify();
+                                            });
+                                            window.prevent_default();
+                                        }
+                                    })
                                     .into_any_element(),
                             );
                             break;
                         }
                         let session_ref = (*session).clone();
-                        let session_id = session.session_id.clone();
+                        let app_session_id = session.id.clone();
                         let label = self.session_label(session);
-                        let modified = session.modified.clone();
+                        let modified = session.updated_at.clone();
                         let agent = session.agent;
-                        let is_open = self.tab_for_session(&path, &session_id).is_some();
+                        let is_open = self.tab_for_session(&app_session_id).is_some();
                         let session_for_open = session_ref.clone();
                         let session_for_delete = session_ref.clone();
-                        let session_id_for_rename = session_id.clone();
-                        let project_path_for_stop = path.clone();
-                        let session_id_for_stop = session_id.clone();
+                        let session_id_for_rename = app_session_id.clone();
+                        let session_id_for_stop = app_session_id.clone();
                         let current_label = label.clone();
 
                         let row = div()
@@ -1283,7 +1536,7 @@ impl Dashboard {
                             .flex()
                             .items_center()
                             .gap(px(4.0))
-                            .pl(px(26.0))
+                            .pl(px(28.0))
                             .pr(px(6.0))
                             .py(px(2.5))
                             .rounded_md()
@@ -1294,7 +1547,7 @@ impl Dashboard {
                                 let this = cx.entity();
                                 move |_, window, cx| {
                                     this.update(cx, |this, cx| {
-                                        this.open_agent_session(&session_for_open, window, cx)
+                                        this.open_app_session(&session_for_open, window, cx)
                                     });
                                     window.prevent_default();
                                 }
@@ -1359,10 +1612,9 @@ impl Dashboard {
                                         let this = cx.entity();
                                         move |_, window, cx| {
                                             this.update(cx, |this, cx| {
-                                                if let Some(index) = this.tab_for_session(
-                                                    &project_path_for_stop,
-                                                    &session_id_for_stop,
-                                                ) {
+                                                if let Some(index) =
+                                                    this.tab_for_session(&session_id_for_stop)
+                                                {
                                                     this.close_tab(index, cx);
                                                 }
                                             });
@@ -1405,6 +1657,69 @@ impl Dashboard {
             );
         }
 
+        if searching && !matched_any {
+            list = list.child(
+                div()
+                    .id("sidebar-no-matches")
+                    .px(px(8.0))
+                    .py(px(10.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text_sub)
+                    .child(self.t("search_no_matches").to_string()),
+            );
+        }
+
+        // ----- bottom bar -----
+
+        let bottom = div()
+            .h(px(34.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .border_t_1()
+            .border_color(theme.border_color)
+            .child(
+                div()
+                    .id("sidebar-new-terminal")
+                    .text_size(px(11.5))
+                    .text_color(theme.text_sub)
+                    .hover(|this| this.text_color(theme.text_main))
+                    .child(self.t("menu_new_terminal_session").to_string())
+                    .on_click({
+                        let this = cx.entity();
+                        move |_, window, cx| {
+                            this.update(cx, |this, cx| {
+                                let project = this.target_project_path();
+                                this.new_plain_terminal(project.as_deref(), window, cx);
+                            });
+                            window.prevent_default();
+                        }
+                    }),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id("sidebar-open-settings")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(24.0))
+                    .rounded_md()
+                    .text_size(px(12.0))
+                    .text_color(theme.text_sub)
+                    .hover(|this| this.bg(theme.hover_bg).text_color(theme.text_main))
+                    .child("⚙")
+                    .on_click({
+                        let this = cx.entity();
+                        move |_, window, cx| {
+                            this.update(cx, |this, cx| this.open_settings(cx));
+                            window.prevent_default();
+                        }
+                    }),
+            );
+
         div()
             .size_full()
             .flex()
@@ -1412,75 +1727,10 @@ impl Dashboard {
             .bg(theme.panel_bg)
             .border_r_1()
             .border_color(theme.border_color)
-            .child(
-                div()
-                    .h(px(34.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(px(10.0))
-                    .border_b_1()
-                    .border_color(theme.border_color)
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Agent Session Switch"),
-                    )
-                    .child(
-                        div()
-                            .id("sidebar-add-project")
-                            .text_size(px(13.0))
-                            .text_color(theme.text_sub)
-                            .hover(|this| this.text_color(theme.text_main))
-                            .child("＋")
-                            .on_click({
-                                let this = cx.entity();
-                                move |_, window, cx| {
-                                    this.update(cx, |this, cx| this.add_project(cx));
-                                    window.prevent_default();
-                                }
-                            }),
-                    ),
-            )
+            .child(header)
+            .child(new_session)
             .child(list)
-            .child(
-                div()
-                    .h(px(30.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(10.0))
-                    .border_t_1()
-                    .border_color(theme.border_color)
-                    .child(
-                        div()
-                            .id("sidebar-new-terminal")
-                            .text_size(px(11.5))
-                            .text_color(theme.text_sub)
-                            .hover(|this| this.text_color(theme.text_main))
-                            .child(self.t("menu_new_terminal_session").to_string())
-                            .on_click({
-                                let this = cx.entity();
-                                move |_, window, cx| {
-                                    this.update(cx, |this, cx| {
-                                        let project = this
-                                            .projects
-                                            .iter()
-                                            .find(|project| {
-                                                this.expanded.contains(&project.path)
-                                                    && project.sessions_loaded
-                                            })
-                                            .map(|project| project.path.clone());
-                                        this.new_plain_terminal(project.as_deref(), window, cx);
-                                    });
-                                    window.prevent_default();
-                                }
-                            }),
-                    ),
-            )
+            .child(bottom)
             .into_any_element()
     }
 

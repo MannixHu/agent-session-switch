@@ -25,7 +25,10 @@ impl AppLanguage {
 }
 
 const ZH_CN: &[(&str, &str)] = &[
-    ("confirm_delete_session", "删除此会话？此操作不可撤销。"),
+    (
+        "confirm_delete_session",
+        "删除此会话？底层数据文件会一并删除，此操作不可撤销。",
+    ),
     ("confirm_delete_project", "从侧边栏删除项目“{name}”？"),
     ("status_ready", "已就绪。"),
     ("status_load_failed", "加载项目/会话失败。"),
@@ -34,6 +37,8 @@ const ZH_CN: &[(&str, &str)] = &[
     ("status_project_create_failed", "添加项目失败：{message}"),
     ("status_session_deleted", "会话已删除。"),
     ("status_session_delete_failed", "删除会话失败。"),
+    ("status_session_create_failed", "新建会话失败：{message}"),
+    ("status_session_rename_failed", "重命名失败：{message}"),
     ("status_stop_terminal_failed", "停止会话终端失败。"),
     ("status_opened_in_app", "已在 {app} 中打开。"),
     ("status_open_terminal_failed", "外部终端打开失败。"),
@@ -42,10 +47,6 @@ const ZH_CN: &[(&str, &str)] = &[
     ("status_project_delete_failed", "删除项目失败。"),
     ("status_session_alias_saved", "左侧会话显示名已保存：{name}"),
     ("status_session_alias_cleared", "已恢复默认会话显示名。"),
-    (
-        "status_session_hidden_invalid",
-        "该会话无法恢复，已在左侧隐藏。",
-    ),
     (
         "status_settings_load_failed",
         "读取配置失败，已使用当前内存设置。",
@@ -118,11 +119,20 @@ const ZH_CN: &[(&str, &str)] = &[
     ("label_restore_last_session", "启动时恢复上次打开的会话"),
     (
         "hint_restore_last_session",
-        "应用启动后自动恢复上次活跃会话。关闭后将回退到“最近会话优先”的默认行为。",
+        "应用启动后自动恢复上次打开的会话。关闭后启动时不自动打开任何会话。",
     ),
     ("button_done", "完成"),
-    ("tree_no_sessions", "暂无会话"),
-    ("tree_no_projects", "暂无项目"),
+    ("tree_no_sessions", "暂无会话（在本应用新建后自动记录）"),
+    ("default_session_title", "新会话"),
+    (
+        "tree_no_projects",
+        "暂无项目。项目仅显示手动添加的，点击右上角 ＋ 添加。",
+    ),
+    ("sidebar_search_placeholder", "搜索项目与会话"),
+    ("sidebar_new_session", "新建会话"),
+    ("section_projects", "项目"),
+    ("search_no_matches", "无匹配结果"),
+    ("status_need_project_first", "请先添加项目。"),
     ("menu_edit_session_name", "编辑显示名"),
     ("menu_open_project_terminal", "终端打开项目"),
     ("menu_open_project_editor", "编辑器打开项目"),
@@ -182,7 +192,7 @@ const ZH_CN: &[(&str, &str)] = &[
     ("show_more_count", "再显示 {count} 条..."),
     (
         "workspace_placeholder",
-        "请选择一个会话以打开 Claude Code。",
+        "选择左侧会话恢复，或在项目中新建会话。",
     ),
     ("fallback_new_project", "新项目"),
     ("menu_new_terminal_session", "新建终端"),
@@ -196,7 +206,7 @@ const ZH_CN: &[(&str, &str)] = &[
 const EN_US: &[(&str, &str)] = &[
     (
         "confirm_delete_session",
-        "Delete this session? This cannot be undone.",
+        "Delete this session? Its data file on disk is removed too. This cannot be undone.",
     ),
     (
         "confirm_delete_project",
@@ -215,6 +225,14 @@ const EN_US: &[(&str, &str)] = &[
     ),
     ("status_session_deleted", "Session deleted."),
     ("status_session_delete_failed", "Failed to delete session."),
+    (
+        "status_session_create_failed",
+        "Failed to create session: {message}",
+    ),
+    (
+        "status_session_rename_failed",
+        "Failed to rename session: {message}",
+    ),
     (
         "status_stop_terminal_failed",
         "Failed to stop terminal session.",
@@ -237,10 +255,6 @@ const EN_US: &[(&str, &str)] = &[
     (
         "status_session_alias_cleared",
         "Restored the default session label.",
-    ),
-    (
-        "status_session_hidden_invalid",
-        "This session could not be resumed and has been hidden from the sidebar.",
     ),
     (
         "status_settings_load_failed",
@@ -344,11 +358,23 @@ const EN_US: &[(&str, &str)] = &[
     ),
     (
         "hint_restore_last_session",
-        "Automatically re-open the last active session after app start. Turn this off to use most recent-session fallback behavior.",
+        "Automatically re-open the last opened session after app start. Turn this off to start with no session open.",
     ),
     ("button_done", "Done"),
-    ("tree_no_sessions", "No sessions"),
-    ("tree_no_projects", "No projects yet"),
+    (
+        "tree_no_sessions",
+        "No sessions yet (created here automatically)",
+    ),
+    ("default_session_title", "New session"),
+    (
+        "tree_no_projects",
+        "No projects yet. Projects are manual-only — add one with the ＋ button above.",
+    ),
+    ("sidebar_search_placeholder", "Search projects & sessions"),
+    ("sidebar_new_session", "New session"),
+    ("section_projects", "Projects"),
+    ("search_no_matches", "No matches"),
+    ("status_need_project_first", "Add a project first."),
     ("menu_edit_session_name", "Edit display name"),
     ("menu_open_project_terminal", "Open project in terminal"),
     ("menu_open_project_editor", "Open project in editor"),
@@ -408,7 +434,7 @@ const EN_US: &[(&str, &str)] = &[
     ("show_more_count", "Show {count} more..."),
     (
         "workspace_placeholder",
-        "Select a session to open Claude Code.",
+        "Pick a session to resume, or start a new one in a project.",
     ),
     ("fallback_new_project", "New Project"),
     ("menu_new_terminal_session", "New Terminal"),
