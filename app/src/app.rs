@@ -1872,13 +1872,14 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let pane = self.settings_pane.clone();
-        let mut overlay = render_modal_scrim(theme, 480.0, 520.0);
+        let mut overlay = render_modal_scrim(theme, 480.0, 560.0, window);
         overlay = overlay
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
+                    .flex_none()
                     .px(px(16.0))
                     .h(px(40.0))
                     .border_b_1()
@@ -1978,9 +1979,15 @@ fn agent_color(agent: AgentKind, theme: &Theme) -> gpui::Hsla {
     }
 }
 
-fn render_modal_scrim(theme: &Theme, width: f32, height: f32) -> gpui::Div {
+/// Modal shell: fixed width, height clamped to the available window height
+/// (so the footer can never be pushed off-screen), with the body between
+/// fixed header/footer rows handling its own scrolling.
+fn render_modal_scrim(theme: &Theme, width: f32, height: f32, window: &Window) -> gpui::Div {
     let mut scrim = gpui::black();
     scrim.a = 0.35;
+    // Leave breathing room above/below the modal; never exceed the window.
+    let available = f32::from(window.bounds().size.height) - 56.0;
+    let height = height.min(available.max(240.0));
     div()
         .absolute()
         .inset_0()
@@ -1992,6 +1999,7 @@ fn render_modal_scrim(theme: &Theme, width: f32, height: f32) -> gpui::Div {
             div()
                 .w(px(width))
                 .h(px(height))
+                .flex_none()
                 .rounded_lg()
                 .bg(theme.app_bg)
                 .border_1()
@@ -2018,7 +2026,7 @@ fn render_confirm_overlay(
     dashboard: &Dashboard,
     state: &ConfirmState,
     theme: &Theme,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Dashboard>,
 ) -> impl IntoElement {
     let lang = dashboard.lang();
@@ -2026,7 +2034,7 @@ fn render_confirm_overlay(
         ConfirmKind::DeleteSession { .. } => t(lang, "menu_delete"),
         ConfirmKind::DeleteProject { .. } => t(lang, "menu_delete"),
     };
-    render_modal_scrim(theme, 380.0, 180.0)
+    render_modal_scrim(theme, 380.0, 180.0, window)
         .child(
             div()
                 .px(px(16.0))
@@ -2102,11 +2110,11 @@ fn render_rename_overlay(
     dashboard: &Dashboard,
     field: gpui::Entity<TextField>,
     theme: &Theme,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Dashboard>,
 ) -> impl IntoElement {
     let lang = dashboard.lang();
-    render_modal_scrim(theme, 380.0, 150.0)
+    render_modal_scrim(theme, 380.0, 150.0, window)
         .child(
             div()
                 .px(px(16.0))
@@ -2169,7 +2177,7 @@ fn render_project_menu_overlay(
     dashboard: &Dashboard,
     path: &str,
     theme: &Theme,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Dashboard>,
 ) -> gpui::AnyElement {
     let lang = dashboard.lang();
@@ -2267,7 +2275,7 @@ fn render_project_menu_overlay(
         }),
     ));
 
-    render_modal_scrim(theme, 300.0, 240.0)
+    render_modal_scrim(theme, 300.0, 240.0, window)
         .child(
             div()
                 .px(px(16.0))
@@ -2318,7 +2326,7 @@ fn render_project_menu_overlay(
 fn render_update_overlay(
     dashboard: &Dashboard,
     theme: &Theme,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Dashboard>,
 ) -> impl IntoElement {
     let lang = dashboard.lang();
@@ -2472,7 +2480,7 @@ fn render_update_overlay(
         },
     ));
 
-    render_modal_scrim(theme, 460.0, 420.0)
+    render_modal_scrim(theme, 460.0, 420.0, window)
         .child(
             div()
                 .px(px(16.0))
@@ -2524,6 +2532,7 @@ fn render_update_overlay(
                 .justify_end()
                 .gap(px(8.0))
                 .px(px(16.0))
+                .flex_none()
                 .h(px(44.0))
                 .border_t_1()
                 .border_color(theme.border_color)
