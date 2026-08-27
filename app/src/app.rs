@@ -1872,7 +1872,7 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let pane = self.settings_pane.clone();
-        let mut overlay = render_modal_scrim(theme, 480.0, 560.0, window);
+        let mut overlay = modal_shell(theme, 480.0, 560.0, window);
         overlay = overlay
             .child(
                 div()
@@ -1965,7 +1965,7 @@ impl Dashboard {
                     )),
             );
         let _ = window;
-        overlay.into_any_element()
+        scrim_wrap(overlay).into_any_element()
     }
 }
 
@@ -1979,15 +1979,33 @@ fn agent_color(agent: AgentKind, theme: &Theme) -> gpui::Hsla {
     }
 }
 
-/// Modal shell: fixed width, height clamped to the available window height
-/// (so the footer can never be pushed off-screen), with the body between
-/// fixed header/footer rows handling its own scrolling.
-fn render_modal_scrim(theme: &Theme, width: f32, height: f32, window: &Window) -> gpui::Div {
-    let mut scrim = gpui::black();
-    scrim.a = 0.35;
+/// Modal box the caller appends header/body/footer children onto. Fixed
+/// width, height clamped to the available window height so the footer can
+/// never be pushed off-screen.
+fn modal_shell(theme: &Theme, width: f32, height: f32, window: &Window) -> gpui::Div {
     // Leave breathing room above/below the modal; never exceed the window.
     let available = f32::from(window.bounds().size.height) - 56.0;
     let height = height.min(available.max(240.0));
+    div()
+        .w(px(width))
+        .h(px(height))
+        .flex_none()
+        .rounded_lg()
+        .bg(theme.app_bg)
+        .border_1()
+        .border_color(theme.border_color)
+        .shadow_lg()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+}
+
+/// Full-window dimming scrim with the modal centered inside it. The modal
+/// must be passed as `child` — appending rows to the scrim itself would lay
+/// them out horizontally beside the box.
+fn scrim_wrap(child: impl IntoElement) -> gpui::Div {
+    let mut scrim = gpui::black();
+    scrim.a = 0.35;
     div()
         .absolute()
         .inset_0()
@@ -1995,20 +2013,7 @@ fn render_modal_scrim(theme: &Theme, width: f32, height: f32, window: &Window) -
         .flex()
         .items_center()
         .justify_center()
-        .child(
-            div()
-                .w(px(width))
-                .h(px(height))
-                .flex_none()
-                .rounded_lg()
-                .bg(theme.app_bg)
-                .border_1()
-                .border_color(theme.border_color)
-                .shadow_lg()
-                .flex()
-                .flex_col()
-                .overflow_hidden(),
-        )
+        .child(child)
 }
 
 fn short_time(timestamp: &str) -> String {
@@ -2034,76 +2039,78 @@ fn render_confirm_overlay(
         ConfirmKind::DeleteSession { .. } => t(lang, "menu_delete"),
         ConfirmKind::DeleteProject { .. } => t(lang, "menu_delete"),
     };
-    render_modal_scrim(theme, 380.0, 180.0, window)
-        .child(
-            div()
-                .px(px(16.0))
-                .py(px(14.0))
-                .text_size(px(13.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .border_b_1()
-                .border_color(theme.border_color)
-                .child(title.to_string()),
-        )
-        .child(
-            div()
-                .flex_1()
-                .px(px(16.0))
-                .py(px(12.0))
-                .text_size(px(12.0))
-                .text_color(theme.text_main)
-                .line_height(px(18.0))
-                .child(state.message.replace('\n', " · ")),
-        )
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(px(8.0))
-                .px(px(16.0))
-                .pb(px(12.0))
-                .child(label_button(
-                    "confirm-cancel",
-                    t(lang, "update_dialog_close"),
-                    theme,
-                    false,
-                    {
-                        let this = cx.entity();
-                        move |window, cx| {
-                            this.update(cx, |this, cx| {
-                                this.overlay = Overlay::None;
-                                cx.notify();
-                            });
-                            window.prevent_default();
-                        }
-                    },
-                ))
-                .child(label_button(
-                    "confirm-delete",
-                    t(lang, "menu_delete"),
-                    theme,
-                    true,
-                    {
-                        let this = cx.entity();
-                        let kind = state.kind.clone();
-                        move |window, cx| {
-                            this.update(cx, |this, cx| {
-                                this.overlay = Overlay::None;
-                                match kind.clone() {
-                                    ConfirmKind::DeleteSession { session } => {
-                                        this.perform_delete_session(&session, cx)
+    scrim_wrap(
+        modal_shell(theme, 380.0, 180.0, window)
+            .child(
+                div()
+                    .px(px(16.0))
+                    .py(px(14.0))
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .border_b_1()
+                    .border_color(theme.border_color)
+                    .child(title.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text_main)
+                    .line_height(px(18.0))
+                    .child(state.message.replace('\n', " · ")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .pb(px(12.0))
+                    .child(label_button(
+                        "confirm-cancel",
+                        t(lang, "update_dialog_close"),
+                        theme,
+                        false,
+                        {
+                            let this = cx.entity();
+                            move |window, cx| {
+                                this.update(cx, |this, cx| {
+                                    this.overlay = Overlay::None;
+                                    cx.notify();
+                                });
+                                window.prevent_default();
+                            }
+                        },
+                    ))
+                    .child(label_button(
+                        "confirm-delete",
+                        t(lang, "menu_delete"),
+                        theme,
+                        true,
+                        {
+                            let this = cx.entity();
+                            let kind = state.kind.clone();
+                            move |window, cx| {
+                                this.update(cx, |this, cx| {
+                                    this.overlay = Overlay::None;
+                                    match kind.clone() {
+                                        ConfirmKind::DeleteSession { session } => {
+                                            this.perform_delete_session(&session, cx)
+                                        }
+                                        ConfirmKind::DeleteProject { path } => {
+                                            this.perform_remove_project(&path, cx)
+                                        }
                                     }
-                                    ConfirmKind::DeleteProject { path } => {
-                                        this.perform_remove_project(&path, cx)
-                                    }
-                                }
-                                cx.notify();
-                            });
-                            window.prevent_default();
-                        }
-                    },
-                )),
-        )
+                                    cx.notify();
+                                });
+                                window.prevent_default();
+                            }
+                        },
+                    )),
+            ),
+    )
 }
 
 fn render_rename_overlay(
@@ -2114,61 +2121,63 @@ fn render_rename_overlay(
     cx: &mut Context<Dashboard>,
 ) -> impl IntoElement {
     let lang = dashboard.lang();
-    render_modal_scrim(theme, 380.0, 150.0, window)
-        .child(
-            div()
-                .px(px(16.0))
-                .py(px(12.0))
-                .text_size(px(13.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(t(lang, "menu_edit_session_name").to_string()),
-        )
-        .child(
-            div()
-                .flex_1()
-                .px(px(16.0))
-                .flex()
-                .items_center()
-                .child(field),
-        )
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(px(8.0))
-                .px(px(16.0))
-                .pb(px(12.0))
-                .child(label_button(
-                    "rename-cancel",
-                    t(lang, "update_dialog_close"),
-                    theme,
-                    false,
-                    {
-                        let this = cx.entity();
-                        move |window, cx| {
-                            this.update(cx, |this, cx| {
-                                this.overlay = Overlay::None;
-                                this.rename_field = None;
-                                cx.notify();
-                            });
-                            window.prevent_default();
-                        }
-                    },
-                ))
-                .child(label_button(
-                    "rename-save",
-                    t(lang, "button_done"),
-                    theme,
-                    true,
-                    {
-                        let this = cx.entity();
-                        move |window, cx| {
-                            this.update(cx, |this, cx| this.commit_rename(window, cx));
-                            window.prevent_default();
-                        }
-                    },
-                )),
-        )
+    scrim_wrap(
+        modal_shell(theme, 380.0, 150.0, window)
+            .child(
+                div()
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(t(lang, "menu_edit_session_name").to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .px(px(16.0))
+                    .flex()
+                    .items_center()
+                    .child(field),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .pb(px(12.0))
+                    .child(label_button(
+                        "rename-cancel",
+                        t(lang, "update_dialog_close"),
+                        theme,
+                        false,
+                        {
+                            let this = cx.entity();
+                            move |window, cx| {
+                                this.update(cx, |this, cx| {
+                                    this.overlay = Overlay::None;
+                                    this.rename_field = None;
+                                    cx.notify();
+                                });
+                                window.prevent_default();
+                            }
+                        },
+                    ))
+                    .child(label_button(
+                        "rename-save",
+                        t(lang, "button_done"),
+                        theme,
+                        true,
+                        {
+                            let this = cx.entity();
+                            move |window, cx| {
+                                this.update(cx, |this, cx| this.commit_rename(window, cx));
+                                window.prevent_default();
+                            }
+                        },
+                    )),
+            ),
+    )
 }
 
 type PickHandler = Box<dyn Fn(&mut Window, &mut App) + 'static>;
@@ -2275,52 +2284,54 @@ fn render_project_menu_overlay(
         }),
     ));
 
-    render_modal_scrim(theme, 300.0, 240.0, window)
-        .child(
-            div()
-                .px(px(16.0))
-                .py(px(12.0))
-                .text_size(px(12.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .border_b_1()
-                .border_color(theme.border_color)
-                .text_ellipsis()
-                .child(name),
-        )
-        .child(
-            div()
-                .flex_1()
-                .px(px(16.0))
-                .py(px(10.0))
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .child(rows),
-        )
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .px(px(16.0))
-                .pb(px(10.0))
-                .child(label_button(
-                    "project-menu-cancel",
-                    t(lang, "update_dialog_close"),
-                    theme,
-                    false,
-                    {
-                        let this = cx.entity();
-                        move |window, cx| {
-                            this.update(cx, |this, cx| {
-                                this.overlay = Overlay::None;
-                                cx.notify();
-                            });
-                            window.prevent_default();
-                        }
-                    },
-                )),
-        )
-        .into_any_element()
+    scrim_wrap(
+        modal_shell(theme, 300.0, 240.0, window)
+            .child(
+                div()
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .border_b_1()
+                    .border_color(theme.border_color)
+                    .text_ellipsis()
+                    .child(name),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .px(px(16.0))
+                    .py(px(10.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(rows),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .px(px(16.0))
+                    .pb(px(10.0))
+                    .child(label_button(
+                        "project-menu-cancel",
+                        t(lang, "update_dialog_close"),
+                        theme,
+                        false,
+                        {
+                            let this = cx.entity();
+                            move |window, cx| {
+                                this.update(cx, |this, cx| {
+                                    this.overlay = Overlay::None;
+                                    cx.notify();
+                                });
+                                window.prevent_default();
+                            }
+                        },
+                    )),
+            ),
+    )
+    .into_any_element()
 }
 
 fn render_update_overlay(
@@ -2480,64 +2491,66 @@ fn render_update_overlay(
         },
     ));
 
-    render_modal_scrim(theme, 460.0, 420.0, window)
-        .child(
-            div()
-                .px(px(16.0))
-                .flex()
-                .items_center()
-                .justify_between()
-                .h(px(40.0))
-                .border_b_1()
-                .border_color(theme.border_color)
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(title.to_string()),
-                )
-                .child(
-                    div()
-                        .id("update-close-x")
-                        .text_size(px(12.0))
-                        .text_color(theme.text_sub)
-                        .hover(|this| this.text_color(theme.text_main))
-                        .child("✕")
-                        .on_click({
-                            let this = cx.entity();
-                            move |_, window, cx| {
-                                this.update(cx, |this, cx| {
-                                    this.overlay = Overlay::None;
-                                    cx.notify();
-                                });
-                                window.prevent_default();
-                            }
-                        }),
-                ),
-        )
-        .child(
-            div()
-                .id("update-body")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .px(px(16.0))
-                .py(px(12.0))
-                .child(body),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_end()
-                .gap(px(8.0))
-                .px(px(16.0))
-                .flex_none()
-                .h(px(44.0))
-                .border_t_1()
-                .border_color(theme.border_color)
-                .child(actions),
-        )
+    scrim_wrap(
+        modal_shell(theme, 460.0, 420.0, window)
+            .child(
+                div()
+                    .px(px(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .h(px(40.0))
+                    .border_b_1()
+                    .border_color(theme.border_color)
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(title.to_string()),
+                    )
+                    .child(
+                        div()
+                            .id("update-close-x")
+                            .text_size(px(12.0))
+                            .text_color(theme.text_sub)
+                            .hover(|this| this.text_color(theme.text_main))
+                            .child("✕")
+                            .on_click({
+                                let this = cx.entity();
+                                move |_, window, cx| {
+                                    this.update(cx, |this, cx| {
+                                        this.overlay = Overlay::None;
+                                        cx.notify();
+                                    });
+                                    window.prevent_default();
+                                }
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("update-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .child(body),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .flex_none()
+                    .h(px(44.0))
+                    .border_t_1()
+                    .border_color(theme.border_color)
+                    .child(actions),
+            ),
+    )
 }
 
 // ----- settings pane -----
